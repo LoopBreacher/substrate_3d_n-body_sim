@@ -1,0 +1,75 @@
+# ==============================================================================
+# Substrate Logistics 3D N-Body Simulator — Git Ignore Rules
+# Ensures only source code, CMake/PowerShell build scripts, vendored GLAD,
+# LICENSE, and documentation are tracked.
+# ==============================================================================
+
+# CMake & Ninja out-of-source / in-source build directories
+build/
+out/
+cmake-build-*/
+CMakeFiles/
+_deps/
+CMakeCache.txt
+cmake_install.cmake
+CTestTestfile.cmake
+compile_commands.json
+Makefile
+*.ninja
+.ninja_deps
+.ninja_log
+
+# Compiled executables, libraries, object files & Windows debug symbols
+*.exe
+*.dll
+*.so
+*.dylib
+*.obj
+*.o
+*.lib
+*.a
+*.exp
+*.pdb
+*.ilk
+*.ipdb
+*.iobj
+*.idb
+
+# NVIDIA CUDA intermediate compiler artifacts
+*.cubin
+*.fatbin
+*.ptx
+*.cudafe*
+*.module_id
+tmpxft_*
+
+# Runtime UI layout & log files (Dear ImGui saves window positions locally)
+imgui.ini
+*.log
+
+# IDE & Editor local workspace files (contain machine-specific local paths)
+.vscode/
+.vs/
+.idea/
+.cache/
+*.sln
+*.vcxproj
+*.vcxproj.filters
+*.vcxproj.user
+*.suo
+*.user
+*.opensdf
+*.sdf
+
+# Local Python / virtual environments & scratch files (if ever created locally)
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*_env/
+
+# OS metadata
+.DS_Store
+Thumbs.db
+Desktop.ini
+
