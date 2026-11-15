@@ -153,41 +153,51 @@ int runBenchmarkSuite() {
         const auto phobosKep = computeKeplerElements(6, 5, s0, engine);
         const auto phobosDom = computeDomainRadii(6, 5, heavy, phobosKep, engine);
 
-        const double rGravAU = engine.gravitationalFloorAU();
-        const double rShock27AU = rGravAU / SHOCK_DIV;
-        const double pWindPred_nPa = P_DRAG_FLOOR * (rShock27AU * rShock27AU) * 1.0e9;
-        const double rComptonSunAU = (LAMBDA_BAR_P * std::sqrt(engine.nodes()[0])) / AU;
+        const double rGravAU     = engine.gravitationalFloorAU();
+        const double rOortCoreAU = engine.outerOortStagnationAU();
+        const double rTS_AU      = engine.terminationShockRadiusAU();
+        const double rHP_AU      = engine.heliopauseRadiusAU();
 
         std::printf("[Substrate Logistics Bare-Metal Hardware Audit]\n");
-        std::printf("  Exact C_delta          : %.12e  ((sqrt(5) - 2) / 500)\n", C_DELTA);
-        std::printf("  Linear Drag sqrt(C_d)  : %.12f  (Void Om_m = %.6f, Global Om_m = %.6f)\n",
+        std::printf("  Exact C_delta                     : %.12e  ((sqrt(5) - 2) / 500)\n", C_DELTA);
+        std::printf("  Linear Drag sqrt(C_d)             : %.12f  (Void Om_m = %.6f, Global Om_m = %.6f)\n",
                     SQRT_C_DELTA, OMEGA_M_VOID, OMEGA_M_GLOBAL);
-        std::printf("  Cover Ledger Sigma_0   : %.6e J/m^3\n", SIGMA_0);
-        std::printf("  Drag Floor P_delta     : %.6e Pa (%.4f pPa; V2/IBEX: 0.26-0.29 pPa)\n",
+        std::printf("  Stagnation Operators C_d^(+-1/4)  : %.7f / %.7f\n",
+                    C_DELTA_FOURTH_ROOT, C_DELTA_INV_FOURTH_ROOT);
+        std::printf("  MIT Bag Constant B_QCD            : %.3f MeV/fm^3 (%.4e Pa; B^1/4 = 145.0 MeV)\n",
+                    B_QCD_MEV_FM3, P_DELTA_MICRO_PA);
+        std::printf("  Derived Yukawa Range (6.784*l_p)  : %.4f fm      (Strong range: 1.414-1.430 fm)\n",
+                    R_YUKAWA_FM);
+        std::printf("  Derived Pion Mass (m_p*C_d^1/4)   : %.2f MeV/c^2  (Observed multiplet: 138.04 MeV/c^2)\n",
+                    M_PION_MEV);
+        std::printf("  Cover Ledger Sigma_0              : %.6e J/m^3\n", SIGMA_0);
+        std::printf("  Macro Drag Floor P_delta          : %.6e Pa (%.4f pPa; V2/IBEX: 0.26-0.29 pPa)\n",
                     P_DRAG_FLOOR, P_DRAG_FLOOR * 1.0e12);
-        std::printf("  Earth Node Density     : %.4e nodes/m^3\n", earthAud.rhoNodes);
-        std::printf("  Earth Compton Floor    : %.4e m\n", earthAud.lambdaComptonBody_m);
-        std::printf("  Top-Down Quantum R     : %.2f km        (Physical R_Earth: %.2f km)\n",
+        std::printf("  Earth Node Density                : %.4e nodes/m^3\n", earthAud.rhoNodes);
+        std::printf("  Earth Compton Floor               : %.4e m\n", earthAud.lambdaComptonBody_m);
+        std::printf("  Top-Down Quantum R                : %.2f km       (Physical R_Earth: %.2f km)\n",
                     earthAud.quantumTopDownRadius_m / 1000.0, earthAud.radiusM / 1000.0);
-        std::printf("  Earth Pixel Purge Rate : %.4e px/s\n", earthAud.pixelPurgeSurface_s);
-        std::printf("  Earth 3R / 4R Channels : %.1f km / %.1f km (Plasmapause / Van Allen)\n",
+        std::printf("  Earth Pixel Purge Rate            : %.4e px/s\n", earthAud.pixelPurgeSurface_s);
+        std::printf("  Earth 3R / 4R Channels            : %.1f km / %.1f km (Plasmapause / Van Allen)\n",
                     earthDom0.vector3R_m / 1000.0, earthDom0.vector4R_m / 1000.0);
-        std::printf("  Earth Surface Clock Lag: %.4f ppb (-%.2f us/day)\n",
+        std::printf("  Earth 6.784R Trapping Limit       : %.1f km      (McIlwain L = 6.784 ring-current limit)\n",
+                    earthDom0.rDeltaStagnation_m / 1000.0);
+        std::printf("  Earth Surface Clock Lag           : %.4f ppb (-%.2f us/day)\n",
                     earthAud.clockLagSurface_ppb, earthAud.clockLagSurface_usDay);
-        std::printf("  Mercury 1PN Precession : %.2f arcsec/cy  (Observed GR: 42.98 arcsec/cy)\n",
+        std::printf("  Mercury 1PN Precession            : %.2f arcsec/cy (Observed GR: 42.98 arcsec/cy)\n",
                     mercAud.precessionArcsecCentury);
-        std::printf("  Phobos r / Fluid Roche : %.0f km / %.0f km (r/d_R = %.3f)\n",
+        std::printf("  Phobos r / Fluid Roche            : %.0f km / %.0f km (r/d_R = %.3f)\n",
                     phobosKep.a_m / 1000.0, phobosDom.rocheFluid_m / 1000.0,
                     phobosKep.a_m / phobosDom.rocheFluid_m);
-        std::printf("  Sun lambda_p*sqrt(N_*) : %.2f AU\n", rComptonSunAU);
-        std::printf("  Sun Grav. Floor R_g    : %.2f AU  (u_g(R_g) == Sigma_0)\n", rGravAU);
-        std::printf("  Dodecahedral Shells    : R_g/50=%.2f | R_g/36=%.2f | R_g/30=%.2f | R_g/27=%.2f | R_g/20=%.2f AU\n",
-                    rGravAU / KAPPA, rGravAU / C_CHANNELS, rGravAU / E_DODEC, rShock27AU, engine.heliopauseRadiusAU());
-        std::printf("  Pred. 1 AU SW Pressure : %.3f nPa  (P_delta * (R_g/27)^2; ACE/Wind mean: ~2.27 nPa)\n",
-                    pWindPred_nPa);
-        std::printf("  Dynamic SW R_HP (7,440): %.2f AU  (20-Vertex R_g/20: %.2f AU; V2/V1: 119.0-121.6 AU)\n\n",
-                    SubstrateEngine::heliopauseTopologicalDragAU(7.0, 440.0, 1.35),
-                    engine.heliopauseRadiusAU());
+        std::printf("  Solar Wind Termination Shock      : %.2f AU       (Voyager 2: 83.7 AU / Voyager 1: 94.0 AU)\n",
+                    rTS_AU);
+        std::printf("  Solar Wind Heliopause             : %.2f AU      (Voyager 2: 119.0 AU / Voyager 1: 121.6 AU)\n",
+                    rHP_AU);
+        std::printf("  Sun Grav. Floor R_g               : %.2f AU     (u_g(R_g) == Sigma_0)\n", rGravAU);
+        std::printf("  Outer Oort Core 6.784 R_g         : %.1f AU    (Inner/Outer Oort core transition)\n",
+                    rOortCoreAU);
+        std::printf("  Galactic 2D Disk Truncation Ratio : %.3f R_d       (0.5*ln(1/C_d); Obs: 3.8 +- 0.7 R_d)\n\n",
+                    DISK_TRUNCATION_RATIO);
 
         StepParams sp;
         sp.dtSeconds = 21600.0;
@@ -392,6 +402,7 @@ int main(int argc, char** argv) {
     stepParams.precision = Precision::Mixed;
 
     RenderSettings renderSettings;
+    renderSettings.terminationShockRadiusAU = static_cast<float>(engine.terminationShockRadiusAU());
     renderSettings.heliopauseRadiusAU = static_cast<float>(engine.heliopauseRadiusAU());
     telemetryUI.coarseProbeAU = engine.heliopauseRadiusAU();
 
@@ -592,8 +603,9 @@ int main(int argc, char** argv) {
         }
         renderer.updateTrailVertices(trailVertBuffer);
 
-        // Assemble 3D Boundary Shells (Dodecahedral Astrosphere + Target 3R/4R, Hill, & Roche)
+        // Assemble 3D Boundary Shells (Heliosphere + Target 3R/4R/6.784R, Hill, & Roche)
         if (!renderSettings.customHeliopauseOverride) {
+            renderSettings.terminationShockRadiusAU = static_cast<float>(engine.terminationShockRadiusAU());
             renderSettings.heliopauseRadiusAU = static_cast<float>(engine.heliopauseRadiusAU());
         }
 
@@ -603,28 +615,19 @@ int main(int argc, char** argv) {
         drawCtx.starCenterRelAU = (numHeavy > 0) ? heavyRelAU[0] : glm::vec3(-originWorldAU_d);
         drawCtx.viewportPx = glm::vec2(static_cast<float>(fbW), static_cast<float>(fbH));
 
-        // Circumstellar Dodecahedral Sub-Shells derived directly from Sun's Gravitational Deletion Floor R_g
+        // Heliospheric Ram-Pressure Boundaries & Gravitational Deletion Floor R_g
         const double rGravSunAU = engine.gravitationalFloorAU();
-        if (renderSettings.showDodecahedralShells && rGravSunAU > 0.0) {
+        if (renderSettings.showHeliosphereShells && rGravSunAU > 0.0) {
             const glm::vec3 starCenter = drawCtx.starCenterRelAU;
-            // k = 50 Planetesimal Resolution Cliff (~48.62 AU: Kuiper Cliff)
-            drawCtx.shells.push_back({starCenter, static_cast<float>(rGravSunAU / KAPPA),
-                                      glm::vec4(0.10f, 0.94f, 0.80f, 0.42f), false, true});
-            // C = 36 Routing Channels (~67.52 AU: Scattered Disk / Eris SMA)
-            drawCtx.shells.push_back({starCenter, static_cast<float>(rGravSunAU / C_CHANNELS),
-                                      glm::vec4(0.32f, 0.76f, 1.00f, 0.34f), false, true});
-            // E = 30 Structural Edge Struts (~81.03 AU: Sedna perihelion / V2 shock envelope)
-            drawCtx.shells.push_back({starCenter, static_cast<float>(rGravSunAU / E_DODEC),
-                                      glm::vec4(0.66f, 0.54f, 1.00f, 0.30f), false, true});
-            // Divisor 27 Termination Shock (~90.03 AU)
-            drawCtx.shells.push_back({starCenter, static_cast<float>(rGravSunAU / SHOCK_DIV),
-                                      glm::vec4(1.00f, 0.68f, 0.22f, 0.38f), false, true});
-            // V = 20 Heliopause / Astropause Equatorial Ring (~121.54 AU)
-            drawCtx.shells.push_back({starCenter, static_cast<float>(rGravSunAU / V_DODEC),
-                                      glm::vec4(0.22f, 0.62f, 1.00f, 0.42f), false, true});
-            // R_g Gravitational Deletion Floor (~2,430.87 AU: u_g == Sigma_{0,Ledger})
+            // Solar Wind Termination Shock Ring (89.44 AU, amber)
+            drawCtx.shells.push_back({starCenter, renderSettings.terminationShockRadiusAU,
+                                      glm::vec4(1.00f, 0.68f, 0.22f, 0.42f), false, true});
+            // Solar Wind Heliopause Equatorial Ring (120.74 AU, blue)
+            drawCtx.shells.push_back({starCenter, renderSettings.heliopauseRadiusAU,
+                                      glm::vec4(0.22f, 0.62f, 1.00f, 0.44f), false, true});
+            // Gravitational Deletion Floor R_g (~2,430.82 AU: u_g == Sigma_{0,Ledger}, subtle outer reference ring)
             drawCtx.shells.push_back({starCenter, static_cast<float>(rGravSunAU),
-                                      glm::vec4(1.00f, 0.86f, 0.34f, 0.24f),
+                                      glm::vec4(1.00f, 0.86f, 0.34f, 0.22f),
                                       camera.distanceAU > 250.0f, true});
         }
 
@@ -638,12 +641,15 @@ int main(int argc, char** argv) {
                 // 1R Bare-Metal Core Ring
                 drawCtx.shells.push_back({center, static_cast<float>(dom.core1R_m / AU),
                                           glm::vec4(0.95f, 0.98f, 1.0f, 0.50f), false, true});
-                // 3R Directional Mass/Axial Extension Shell (Plasmapause delta)
+                // 3R Directional Mass/Axial Extension Shell (Plasmapause altitude)
                 drawCtx.shells.push_back({center, static_cast<float>(dom.vector3R_m / AU),
                                           glm::vec4(0.00f, 0.90f, 1.00f, 0.32f), true, true});
                 // 4R Unspooled 4-Channel EM Boundary (Van Allen / Charge analog)
                 drawCtx.shells.push_back({center, static_cast<float>(dom.vector4R_m / AU),
                                           glm::vec4(0.76f, 0.34f, 1.00f, 0.26f), true, true});
+                // 6.784R Outer Dipolar Ring-Current Trapping Boundary (C_delta^(-1/4) * R_body, gold ring)
+                drawCtx.shells.push_back({center, static_cast<float>(dom.rDeltaStagnation_m / AU),
+                                          glm::vec4(1.00f, 0.82f, 0.25f, 0.45f), false, true});
             }
 
             if (renderSettings.showHillAndRoche) {
@@ -761,13 +767,13 @@ int main(int argc, char** argv) {
                     camera.panOffsetAU = glm::vec3(0.0f);
                 }
 
-                if (ImGui::Button("Zoom: 3R/4R Channels")) {
+                if (ImGui::Button("Zoom: 3R/4R/6.78R Magnetosphere")) {
                     camera.lockTarget = true;
                     renderSettings.logScale = false;
                     renderSettings.showVectorChannels = true;
                     camera.panOffsetAU = glm::vec3(0.0f);
                     camera.distanceAU = std::max(1.0e-5f,
-                                                 static_cast<float>((14.0 * engine.radius()[targetIdx]) / AU));
+                                                 static_cast<float>((18.0 * engine.radius()[targetIdx]) / AU));
                 }
                 ImGui::SameLine();
                 if (ImGui::Button("Zoom: Moon / Hill System")) {
@@ -783,10 +789,10 @@ int main(int argc, char** argv) {
                                              : (60.0 * engine.radius()[targetIdx]);
                     camera.distanceAU = std::clamp(static_cast<float>(spanM / AU), 5.0e-5f, 50.0f);
                 }
-                if (ImGui::Button("Zoom: Kuiper Cliff & Astrosphere (R_g / 50..20)", ImVec2(-1.0f, 0.0f))) {
+                if (ImGui::Button("Zoom: Heliosphere (TS 89.4 AU / HP 120.7 AU)", ImVec2(-1.0f, 0.0f))) {
                     camera.lockTarget = false;
                     renderSettings.logScale = false;
-                    renderSettings.showDodecahedralShells = true;
+                    renderSettings.showHeliosphereShells = true;
                     renderSettings.showHeliopause = true;
                     camera.panOffsetAU = glm::vec3(0.0f);
                     camera.distanceAU = 195.0f;
@@ -796,12 +802,12 @@ int main(int argc, char** argv) {
             if (ImGui::CollapsingHeader("3D Overlays & Viewport Settings", ImGuiTreeNodeFlags_DefaultOpen)) {
                 ImGui::Checkbox("Show Deconflicted 2D Labels (HUD)", &showLabels);
                 ImGui::Checkbox("Show 3D Orbit Trails", &renderSettings.showOrbitTrails);
-                ImGui::Checkbox("Show 3R / 4R Magnetospheric Vector Shells", &renderSettings.showVectorChannels);
+                ImGui::Checkbox("Show 3R / 4R / 6.784R Magnetospheric Shells", &renderSettings.showVectorChannels);
                 ImGui::Checkbox("Show Hill Sphere & Fluid Roche Limit", &renderSettings.showHillAndRoche);
-                ImGui::Checkbox("Show Dodecahedral Astrosphere Shells (R_g/50..20)", &renderSettings.showDodecahedralShells);
+                ImGui::Checkbox("Show Heliosphere Rings (TS 89.44 AU & R_g Floor)", &renderSettings.showHeliosphereShells);
                 char helioLabel[96];
                 std::snprintf(helioLabel, sizeof(helioLabel),
-                              "Show 20-Vertex Heliopause Sphere (%.2f AU)##HelioSphere",
+                              "Show Heliopause Wireframe Sphere (%.2f AU)##HelioSphere",
                               renderSettings.heliopauseRadiusAU);
                 ImGui::Checkbox(helioLabel, &renderSettings.showHeliopause);
                 ImGui::Checkbox("Show Ecliptic Grid", &renderSettings.showGrid);

@@ -26,13 +26,14 @@ struct KeplerElements {
 };
 
 struct DomainRadii {
-    double core1R_m = 0.0;         // 1 * R_body (Bare-metal core boundary)
-    double vector3R_m = 0.0;       // 3 * R_body (3-channel directional mass/axial extension / Plasmapause delta)
-    double vector4R_m = 0.0;       // 4 * R_body (4-channel unspooled EM / Van Allen boundary)
-    double hillRadius_m = 0.0;     // Hill sphere r_H
-    double soiRadius_m = 0.0;      // Laplace sphere of influence r_SOI
-    double rocheFluid_m = 0.0;     // Fluid Roche limit (around this planet, or host planet's Roche limit for moon)
-    double rocheRigid_m = 0.0;     // Rigid-body Roche limit
+    double core1R_m = 0.0;           // 1 * R_body (Bare-metal core boundary)
+    double vector3R_m = 0.0;         // 3 * R_body (3-channel directional mass/axial extension / Plasmapause delta)
+    double vector4R_m = 0.0;         // 4 * R_body (4-channel unspooled EM / Van Allen boundary)
+    double rDeltaStagnation_m = 0.0; // C_delta^(-1/4) * R_body = 6.7839605 * R_body (Outer dipolar ring-current trapping limit)
+    double hillRadius_m = 0.0;       // Hill sphere r_H
+    double soiRadius_m = 0.0;        // Laplace sphere of influence r_SOI
+    double rocheFluid_m = 0.0;       // Fluid Roche limit (around this planet, or host planet's Roche limit for moon)
+    double rocheRigid_m = 0.0;       // Rigid-body Roche limit
 };
 
 struct SubstrateBodyAudit {
@@ -71,7 +72,7 @@ struct SubstrateBodyAudit {
 };
 
 struct CoarseGrainAudit {
-    double probeRadiusAU = 121.54;
+    double probeRadiusAU = 120.74;
     double probeVolumeM3 = 0.0;
     double enclosedNodes = 0.0;
     double enclosedCompiledNodes = 0.0;

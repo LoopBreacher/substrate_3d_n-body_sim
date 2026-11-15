@@ -21,10 +21,29 @@ constexpr double constSqrt(double x) {
     return g * scale;
 }
 
+// Compile-time natural logarithm ln(x) valid in both C++20 constexpr and CUDA __host__/__device__ code.
+constexpr double constLog(double x) {
+    if (x <= 0.0) return 0.0;
+    constexpr double LN2 = 0.69314718055994530942;
+    int k = 0;
+    while (x >= 1.5)  { x *= 0.5; ++k; }
+    while (x < 0.75)  { x *= 2.0; --k; }
+    const double u = (x - 1.0) / (x + 1.0);
+    const double u2 = u * u;
+    double term = u;
+    double sum = u;
+    for (int n = 1; n <= 18; ++n) {
+        term *= u2;
+        sum += term / static_cast<double>(2 * n + 1);
+    }
+    return 2.0 * sum + static_cast<double>(k) * LN2;
+}
+
 constexpr double PI_CONST = 3.14159265358979323846;
 
 // --- Sub-Node Quantum & Topological Hardware Anchors ---
 constexpr double M_P          = 1.6726219e-27;   // Single-proton mass translation anchor (kg, N_proton = 1)
+constexpr double M_P_MEV      = 938.272088;      // Single-proton rest mass energy (MeV/c^2)
 constexpr double LAMBDA_BAR_P = 2.103089e-16;    // Spatial pixel anchor: reduced proton Compton wavelength (m)
 constexpr double V_NODE       = LAMBDA_BAR_P * LAMBDA_BAR_P * LAMBDA_BAR_P; // Sub-node voxel (~9.3019e-48 m^3)
 constexpr double C_LIGHT      = 299792458.0;     // Master bus speed invariant (m/s)
@@ -38,19 +57,31 @@ constexpr double K_OMEGA        = 1.11587e-37;   // Substrate Anchor Constant (m
 constexpr double KAPPA          = 50.0;          // Dodecahedral cell packing constant (120-cell PDS cover)
 constexpr double KAPPA_5        = KAPPA * KAPPA * KAPPA * KAPPA * KAPPA; // 5D state-space partition (50^5)
 
-// Dodecahedral cell structural divisors (circumstellar astrosphere & debris-disk sub-shells):
-constexpr double V_DODEC        = 20.0;          // 20 vertices of the dodecahedral cell (Astropause: R_g / 20)
-constexpr double SHOCK_DIV      = 27.0;          // Stagnation shock divisor 1.35 * 20 = 27 (Termination Shock: R_g / 27)
-constexpr double E_DODEC        = 30.0;          // 30 1D structural edge struts (Edge shell: R_g / 30)
-constexpr double C_CHANNELS     = 36.0;          // 12 faces * 3 axes = 36 active routing channels (Scattered Disk: R_g / 36)
-
 // Exact algebraic Universal Topological Drag constant: C_delta = (sqrt(5) - 2) / 500 = phi^-3 / 500
 constexpr double C_DELTA        = (constSqrt(5.0) - 2.0) / 500.0; // 4.7213595499957939e-4
 constexpr double SQRT_C_DELTA   = constSqrt(C_DELTA);             // 0.021728689675163984 (~2.1729%)
+
+// Universal Dimensionless Stagnation Operators (Paper 4: Topological Drag Pressure Floor):
+constexpr double C_DELTA_FOURTH_ROOT     = constSqrt(SQRT_C_DELTA);        // C_delta^(1/4)  = 0.1474065 (3D mass/energy compression)
+constexpr double C_DELTA_INV_FOURTH_ROOT = 1.0 / C_DELTA_FOURTH_ROOT;      // C_delta^(-1/4) = 6.7839605 (3D central-body stagnation multiplier)
+constexpr double DISK_TRUNCATION_RATIO   = 0.5 * constLog(1.0 / C_DELTA);  // 0.5 * ln(1/C_delta) = 3.829119 (2D exponential disk truncation R_trunc / R_d)
+
+// --- Micro-Scale Hadronic Saturation Ledger (Sub-Node QCD Confinement & Pion Mass) ---
+constexpr double MEV_PER_FM3_TO_PA   = 1.602176634e32;                     // 1 MeV/fm^3 in Pascals (J/m^3)
+constexpr double EPSILON_MAX_PA      = (M_P * C_LIGHT * C_LIGHT) / V_NODE; // 1.61608e37 Pa (100.869 GeV/fm^3 single-voxel saturation)
+constexpr double P_DELTA_MICRO_PA    = C_DELTA * EPSILON_MAX_PA;           // 7.6301e33 Pa (Micro-scale topological drag floor)
+constexpr double B_QCD_MEV_FM3       = P_DELTA_MICRO_PA / MEV_PER_FM3_TO_PA; // 47.624 MeV/fm^3 (Derived MIT Bag Constant B_QCD; B^(1/4) = 145.0 MeV)
+constexpr double R_YUKAWA_FM         = 0.2103089 * C_DELTA_INV_FOURTH_ROOT;  // 1.42673 fm (Derived Yukawa pion range 6.784 * lambda_bar_p)
+constexpr double M_PION_MEV          = M_P_MEV * C_DELTA_FOURTH_ROOT;      // 138.307 MeV/c^2 (Derived pion mass m_p * C_delta^(1/4))
+
+// --- Macro-Scale Global Resting Cover Ledger & Heliospheric Drag Floor ---
 constexpr double DRAG_TAX_3D    = 0.017032;      // Volumetric 36-channel routing drag tax (1.7032%)
 constexpr double SIGMA_0_RAW    = (2.0 * M_P * C_LIGHT * C_LIGHT) / (V_NODE * T_OMEGA_SQ * KAPPA_5);
 constexpr double SIGMA_0        = SIGMA_0_RAW * (1.0 - DRAG_TAX_3D); // Global Resting Cover Ledger (~6.0022e-10 J/m^3)
-constexpr double P_DRAG_FLOOR   = C_DELTA * SIGMA_0; // Topological drag pressure floor (~2.8339e-13 Pa = 0.2834 pPa)
+constexpr double P_DRAG_FLOOR   = C_DELTA * SIGMA_0; // Macro topological drag pressure floor (~2.8339e-13 Pa = 0.2834 pPa)
+constexpr double P_DELTA_MACRO_PA = P_DRAG_FLOOR;
+constexpr double P_SW_1AU_PA    = M_P * (7.0e6) * (440000.0 * 440000.0); // 2.2667e-9 Pa (ACE/Wind 1 AU solar-cycle mean: n=7 cm^-3, v=440 km/s)
+constexpr double HELIOSHEATH_STANDOFF = 1.35;    // Rankine-Hugoniot subsonic heliosheath standoff ratio R_HP / R_TS
 
 // --- Garbage Collection Compilation Filter (He^4 4-Channel Vector Saturation) ---
 constexpr double RHO_GC_EXACT = SIGMA_0 / (M_P * C_LIGHT * C_LIGHT); // ~3.9928 nodes/m^3

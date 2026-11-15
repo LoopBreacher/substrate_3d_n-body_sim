@@ -68,6 +68,11 @@ __pycache__/
 venv/
 *_env/
 
+# Local draft manuscript folders (keep published references in README/BibTeX)
+manuscript/
+manuscripts/
+papers/
+
 # OS metadata
 .DS_Store
 Thumbs.db

@@ -518,22 +518,25 @@ void drawTelemetryWindow(TelemetryUIState& ui,
 
             ImGui::Spacing();
             ImGui::TextColored(ImVec4(0.0f, 0.88f, 1.0f, 1.0f),
-                               "C. Macro-Scale Quantization & Vector-Channel Geometry");
+                               "C. Macro-Scale Quantization & Magnetospheric Geometry");
             ImGui::Text("Collective Compton Floor      : %.4e m", audit.lambdaComptonBody_m);
             ImGui::Text("Top-Down Quantum Radius       : %.2f km  (Physical: %.2f km)",
                         audit.quantumTopDownRadius_m / 1000.0, audit.radiusM / 1000.0);
             ImGui::TextColored(ImVec4(0.0f, 0.90f, 1.0f, 1.0f),
-                               "3R Directional Mass/Axial     : %.1f km  (Plasmapause delta)",
+                               "3R Directional Mass/Axial     : %.1f km  (Plasmapause altitude)",
                                dom.vector3R_m / 1000.0);
             ImGui::TextColored(ImVec4(0.80f, 0.45f, 1.0f, 1.0f),
                                "4R Unspooled 4-Channel Bound  : %.1f km  (Van Allen / Charge analog)",
                                dom.vector4R_m / 1000.0);
-            if (ImGui::Button("Lock & Zoom to 3R / 4R Vector Channels")) {
+            ImGui::TextColored(ImVec4(1.00f, 0.82f, 0.25f, 1.0f),
+                               "6.784R Stagnation Limit       : %.1f km  (C_d^-1/4 Ring-Current L = 6.784)",
+                               dom.rDeltaStagnation_m / 1000.0);
+            if (ImGui::Button("Lock & Zoom to 3R / 4R / 6.78R Magnetosphere")) {
                 lockTarget = true;
                 renderSettings.logScale = false;
                 renderSettings.showVectorChannels = true;
                 panOffsetAU = glm::vec3(0.0f);
-                camDistanceAU = std::max(1.0e-5f, static_cast<float>((14.0 * dom.core1R_m) / AU));
+                camDistanceAU = std::max(1.0e-5f, static_cast<float>((18.0 * dom.core1R_m) / AU));
             }
 
             ImGui::Spacing();
@@ -558,151 +561,90 @@ void drawTelemetryWindow(TelemetryUIState& ui,
                         H_LAMBDA_KMS_MPC, H_GLOBAL_KMS_MPC, H_LOCAL_KMS_MPC, S8_VOID, S8_GLOBAL);
 
             ImGui::Spacing();
-            if (ImGui::TreeNodeEx("Dodecahedral Astrosphere & Exoplanet Disk Comparator",
+            if (ImGui::TreeNodeEx("Topological Drag Pressure Floor (P_delta) — 4-Regime Hardware Audit",
                                   ImGuiTreeNodeFlags_DefaultOpen)) {
-                struct StarPreset {
-                    const char* label;
-                    double massSolar;
-                    double radiusSolar;
-                    const char* noteCliff50;
-                    const char* noteChan36;
-                    const char* noteEdge30;
-                    const char* noteShock27;
-                    const char* noteAstro20;
-                    const char* summary;
-                };
-                static constexpr StarPreset kPresets[] = {
-                    {"Solar System (G2V, 1.00 M_sun)", 1.000, 1.000,
-                     "Kuiper Cliff (48-50 AU)", "Scattered Disk / Eris a=67.9 AU",
-                     "Sedna q=76.2 / V2 TS 83.7 AU", "Mean V1/V2 Shock (88.9 AU)",
-                     "Heliopause (V2 119.0 - V1 121.6 AU)",
-                     "Exact cancellation: lambda_bar_p * sqrt(N_sun) = 48.47 AU -> Kuiper Cliff R_g/50 = 48.62 AU."},
-                    {"Epsilon Eridani (K2V, 0.82 M_sun)", 0.820, 0.735,
-                     "Inner Dust Clearing", "ALMA Belt Inner Edge (~64 AU)",
-                     "ALMA Narrow Belt Peak (70 AU)", "ALMA Belt Outer Edge (~76 AU)",
-                     "Outer Astropause Cutoff",
-                     "ALMA resolves a narrow ring at 64-76 AU (peak 70 AU), bracketed by R_g/36 -> R_g/27 and centered near R_g/30."},
-                    {"HR 8799 (F0V, 1.52 M_sun)", 1.520, 1.502,
-                     "Outermost Giant Planet b (68 AU)", "Planet b Chaotic Clearing Zone",
-                     "Inner Cavity Transition", "Pre-Belt Stagnation Step",
-                     "ALMA Cold Belt Inner Edge (145+-12 AU)",
-                     "Resolves HR 8799's 90-145 AU cavity puzzle without an unseen 5th giant planet: R_g/20 = 149.8 AU."},
-                    {"Fomalhaut (A3V, 1.92 M_sun)", 1.920, 1.842,
-                     "Inner Warm Cavity", "JWST Mid-Belt (83-104 AU, mid 93.5 AU)",
-                     "JWST Outer Gap (104-133 AU)", "Main KBA Inner Step (133-136 AU)",
-                     "Outer KBA & Halo Cutoff (~165 AU)",
-                     "JWST/MIRI & ALMA nested belts lock onto R_TS,1 (91.9 AU), R_g/36 (93.6 AU), and R_g/27 -> R_g/20."},
-                    {"Vega (A0V, 2.135 M_sun)", 2.135, 2.726,
-                     "JWST KBA Inner Edge (74-80 AU)", "Inner Planetesimal Core",
-                     "Mid Planetesimal Disk", "Outer Planetesimal Core",
-                     "JWST/ALMA Outer Disk Edge (~170 AU)",
-                     "Oblate rapid rotator (R_eq = 2.726 R_sun): R_TS,1/1.35 = 59.0 AU matches JWST's ~60 AU gap."},
-                    {"Custom Stellar System", 1.000, 1.000,
-                     "k=50 Planetesimal Cliff", "36-Channel Routing Shell",
-                     "30-Edge Structural Strut", "Supersonic Stagnation Shock",
-                     "20-Vertex Astropause",
-                     "Universal hardware scaling: R_g(N_*) proportional to sqrt(N_*), independent of empirical ISM tuning."}
-                };
+                const double rGravAU     = engine.gravitationalFloorAU();
+                const double rOortCoreAU = engine.outerOortStagnationAU();
+                const double rTS_sw = SubstrateEngine::heliopauseTopologicalDragAU(
+                    ui.swDensity1AU_cm3, ui.swSpeed_kms, 1.0);
+                const double rHP_sw = HELIOSHEATH_STANDOFF * rTS_sw;
 
-                ImGui::Combo("Benchmark Star", &ui.astrospherePresetIdx,
-                             "Solar System (1.00 M_sun)\0"
-                             "Epsilon Eridani (0.82 M_sun)\0"
-                             "HR 8799 (1.52 M_sun)\0"
-                             "Fomalhaut (1.92 M_sun)\0"
-                             "Vega (2.135 M_sun)\0"
-                             "Custom Star (M_*, R_*)\0");
-
-                const int pSel = std::clamp(ui.astrospherePresetIdx, 0, 5);
-                double mSolar = kPresets[pSel].massSolar;
-                double rSolar = kPresets[pSel].radiusSolar;
-                if (pSel == 5) {
-                    ImGui::SliderFloat("Star Mass (M / M_sun)", &ui.customStarMassSolar, 0.08f, 20.0f, "%.3f",
-                                       ImGuiSliderFlags_Logarithmic);
-                    ImGui::SliderFloat("Star Radius (R / R_sun)", &ui.customStarRadiusSolar, 0.10f, 20.0f, "%.3f",
-                                       ImGuiSliderFlags_Logarithmic);
-                    mSolar = ui.customStarMassSolar;
-                    rSolar = ui.customStarRadiusSolar;
-                }
-
-                constexpr double M_SUN_REF = 1.9885e30;
-                const double nSunRef = M_SUN_REF / M_P;
-                const double nStar = (pSel == 0 && engine.numHeavy() > 0)
-                                         ? ((engine.density()[0] >= RHO_GC) ? engine.nodes()[0] : 0.0)
-                                         : ((mSolar * M_SUN_REF) / M_P);
-
-                const double rComptonSqrtN = (LAMBDA_BAR_P * std::sqrt(std::max(nStar, 0.0))) / AU;
-                const double rGravAU       = gravitationalFloorMetersFromNodes(nStar) / AU;
-                const double rGravSunRefAU = gravitationalFloorMetersFromNodes(nSunRef) / AU;
-
-                const double rCliff50 = rGravAU / KAPPA;
-                const double rChan36  = rGravAU / C_CHANNELS;
-                const double rEdge30  = rGravAU / E_DODEC;
-                const double rShock27 = rGravAU / SHOCK_DIV;
-                const double rAstro20 = rGravAU / V_DODEC;
-
-                const double inflowFactor = std::sqrt(mSolar / std::max(rSolar, 1.0e-4));
-                const double rShockSurf1  = (rGravSunRefAU / SHOCK_DIV) * inflowFactor;
-                const double pWindPred1AU_nPa = P_DRAG_FLOOR * (rShock27 * rShock27) * 1.0e9;
-
-                ImGui::Text("Compton-Node Scale (lambda_p * sqrt(N_*)) : %.2f AU  |  Surface Shock R_TS,1: %.1f AU",
-                            rComptonSqrtN, rShockSurf1);
-                ImGui::Text("Predicted 1 AU Wind Pressure (P_d * R_TS^2): %.3f nPa  (ACE/Wind Solar Mean: ~2.27 nPa)",
-                            pWindPred1AU_nPa);
-
-                if (ImGui::BeginTable("DodecShellTable", 3, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg)) {
-                    ImGui::TableSetupColumn("Dodecahedral Shell", ImGuiTableColumnFlags_WidthFixed, 145.0f);
-                    ImGui::TableSetupColumn("Derived Radius", ImGuiTableColumnFlags_WidthFixed, 95.0f);
-                    ImGui::TableSetupColumn("ALMA / JWST / Voyager Match");
+                if (ImGui::BeginTable("FourRegimeTable", 3, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg)) {
+                    ImGui::TableSetupColumn("Regime & Observable", ImGuiTableColumnFlags_WidthFixed, 175.0f);
+                    ImGui::TableSetupColumn("Substrate Output", ImGuiTableColumnFlags_WidthFixed, 125.0f);
+                    ImGui::TableSetupColumn("Empirical / Theoretical Benchmark");
                     ImGui::TableHeadersRow();
 
-                    auto row = [](const char* tier, double valAU, const char* note, const ImVec4& col) {
+                    auto row = [](const char* name, const char* val, const char* ref, const ImVec4& col) {
                         ImGui::TableNextRow();
-                        ImGui::TableSetColumnIndex(0); ImGui::TextColored(col, "%s", tier);
-                        ImGui::TableSetColumnIndex(1); ImGui::Text("%.2f AU", valAU);
-                        ImGui::TableSetColumnIndex(2); ImGui::TextUnformatted(note);
+                        ImGui::TableSetColumnIndex(0); ImGui::TextColored(col, "%s", name);
+                        ImGui::TableSetColumnIndex(1); ImGui::TextUnformatted(val);
+                        ImGui::TableSetColumnIndex(2); ImGui::TextUnformatted(ref);
                     };
 
-                    row("k=50 Cliff (R_g/50)",     rCliff50, kPresets[pSel].noteCliff50, ImVec4(0.20f, 0.96f, 0.82f, 1.0f));
-                    row("C=36 Channels (R_g/36)",  rChan36,  kPresets[pSel].noteChan36,  ImVec4(0.40f, 0.80f, 1.00f, 1.0f));
-                    row("E=30 Struts (R_g/30)",    rEdge30,  kPresets[pSel].noteEdge30,  ImVec4(0.72f, 0.62f, 1.00f, 1.0f));
-                    row("Shock Div 27 (R_g/27)",   rShock27, kPresets[pSel].noteShock27, ImVec4(1.00f, 0.72f, 0.28f, 1.0f));
-                    row("V=20 Astropause (R_g/20)",rAstro20, kPresets[pSel].noteAstro20, ImVec4(0.35f, 0.72f, 1.00f, 1.0f));
-                    row("Grav. Floor (R_g)",       rGravAU,  "u_g(R_g) == Sigma_{0,Ledger}", ImVec4(1.00f, 0.88f, 0.42f, 1.0f));
+                    char bufBag[64], bufYuk[64], bufPion[64], bufMag[64], bufMacroP[64], bufTS[64], bufHP[64], bufOort[64], bufDisk[64];
+                    std::snprintf(bufBag, sizeof(bufBag), "%.3f MeV/fm^3", B_QCD_MEV_FM3);
+                    std::snprintf(bufYuk, sizeof(bufYuk), "%.4f fm", R_YUKAWA_FM);
+                    std::snprintf(bufPion, sizeof(bufPion), "%.2f MeV/c^2", M_PION_MEV);
+                    std::snprintf(bufMag, sizeof(bufMag), "%.1f km (6.784R)", dom.rDeltaStagnation_m / 1000.0);
+                    std::snprintf(bufMacroP, sizeof(bufMacroP), "%.4f pPa", P_DRAG_FLOOR * 1.0e12);
+                    std::snprintf(bufTS, sizeof(bufTS), "%.2f AU", rTS_sw);
+                    std::snprintf(bufHP, sizeof(bufHP), "%.2f AU", rHP_sw);
+                    std::snprintf(bufOort, sizeof(bufOort), "%.1f AU", rOortCoreAU);
+                    std::snprintf(bufDisk, sizeof(bufDisk), "%.3f R_d", DISK_TRUNCATION_RATIO);
+
+                    // Regime I: Subatomic (QCD Confinement & Pion Mass)
+                    row("I. MIT Bag Constant B_QCD", bufBag, "7.630e33 Pa (B^1/4 = 145.0 MeV)", ImVec4(1.00f, 0.55f, 0.55f, 1.0f));
+                    row("I. Yukawa Range (6.784 l_p)", bufYuk, "1.414-1.430 fm strong range", ImVec4(1.00f, 0.55f, 0.55f, 1.0f));
+                    row("I. Pion Mass (m_p C_d^1/4)", bufPion, "138.04 MeV/c^2 multiplet (99.81%)", ImVec4(1.00f, 0.55f, 0.55f, 1.0f));
+
+                    // Regime II: Planetary Magnetosphere
+                    row("II. 6.784R Trapping Limit", bufMag, "McIlwain L=6.784 ring-current limit", ImVec4(1.00f, 0.82f, 0.25f, 1.0f));
+
+                    // Regime III: Heliospheric Ram Balance & Oort Stagnation
+                    row("III. Macro Drag Floor P_d", bufMacroP, "2.053e4 K cm^-3 (V2/IBEX: 0.26-0.29 pPa)", ImVec4(0.35f, 0.92f, 0.75f, 1.0f));
+                    row("III. Termination Shock R_TS", bufTS, "Voyager 2: 83.7 AU / Voyager 1: 94.0 AU", ImVec4(1.00f, 0.72f, 0.28f, 1.0f));
+                    row("III. Heliopause Nose R_HP", bufHP, "Voyager 2: 119.0 AU / Voyager 1: 121.6 AU", ImVec4(0.35f, 0.78f, 1.00f, 1.0f));
+                    row("III. Outer Oort Core 6.784R_g", bufOort, "R_g = 2,430.82 AU -> Hills/Oort core", ImVec4(0.95f, 0.88f, 0.45f, 1.0f));
+
+                    // Regime IV: Galactic Disk Truncation & Bubbles
+                    row("IV. 2D Disk Truncation", bufDisk, "0.5 ln(1/C_d) vs. 3.8 +- 0.7 R_d obs.", ImVec4(0.76f, 0.58f, 1.00f, 1.0f));
+                    row("IV. Fermi / eROSITA Bubbles", "8.55 / 11.40 kpc", "3 R_0 (gamma) & 4 R_0 (X-ray) in P_d", ImVec4(0.76f, 0.58f, 1.00f, 1.0f));
 
                     ImGui::EndTable();
                 }
 
-                ImGui::TextWrapped("%s", kPresets[pSel].summary);
+                ImGui::Spacing();
+                ImGui::TextColored(ImVec4(0.35f, 0.92f, 0.75f, 1.0f),
+                                   "Interactive Regime III Solar Wind Ram-Pressure Balance (P_SW vs. P_delta):");
+                ImGui::SliderFloat("Solar Wind n(1 AU) [cm^-3]", &ui.swDensity1AU_cm3, 2.0f, 12.0f, "%.1f");
+                ImGui::SliderFloat("Solar Wind v_SW [km/s]", &ui.swSpeed_kms, 300.0f, 650.0f, "%.0f");
+                ImGui::Text("Live Stagnation: R_TS = %.2f AU  |  R_HP = %.2f AU  |  Grav. Floor R_g = %.2f AU",
+                            rTS_sw, rHP_sw, rGravAU);
 
-                if (ImGui::Button("Frame Solar Dodecahedral Shells in 3D")) {
+                if (ImGui::SmallButton("Apply Wind R_TS & R_HP to 3D Scene")) {
+                    renderSettings.customHeliopauseOverride = true;
+                    renderSettings.terminationShockRadiusAU = static_cast<float>(rTS_sw);
+                    renderSettings.heliopauseRadiusAU = static_cast<float>(rHP_sw);
+                    renderSettings.showHeliosphereShells = true;
+                    renderSettings.showHeliopause = true;
+                }
+                ImGui::SameLine();
+                if (ImGui::SmallButton("Restore Baseline (7 cm^-3, 440 km/s)")) {
+                    ui.swDensity1AU_cm3 = 7.0f;
+                    ui.swSpeed_kms = 440.0f;
+                    renderSettings.customHeliopauseOverride = false;
+                    renderSettings.terminationShockRadiusAU = static_cast<float>(engine.terminationShockRadiusAU());
+                    renderSettings.heliopauseRadiusAU = static_cast<float>(engine.heliopauseRadiusAU());
+                }
+                ImGui::SameLine();
+                if (ImGui::SmallButton("Frame Heliosphere in 3D")) {
                     lockTarget = false;
                     renderSettings.logScale = false;
-                    renderSettings.showDodecahedralShells = true;
+                    renderSettings.showHeliosphereShells = true;
                     renderSettings.showHeliopause = true;
                     panOffsetAU = glm::vec3(0.0f);
                     camDistanceAU = 195.0f;
-                }
-
-                if (ImGui::TreeNode("Dynamic Solar Wind Ram-Pressure Test (P_SW vs. P_delta)")) {
-                    ImGui::SliderFloat("Solar Wind n(1 AU) [cm^-3]", &ui.swDensity1AU_cm3, 2.0f, 12.0f, "%.1f");
-                    ImGui::SliderFloat("Solar Wind v_SW [km/s]", &ui.swSpeed_kms, 300.0f, 650.0f, "%.0f");
-                    const double rTS_sw = SubstrateEngine::heliopauseTopologicalDragAU(
-                        ui.swDensity1AU_cm3, ui.swSpeed_kms, 1.0);
-                    const double rHP_sw = 1.35 * rTS_sw;
-                    ImGui::TextColored(ImVec4(0.25f, 0.95f, 0.70f, 1.0f),
-                                       "Ram Stagnation: R_TS = %.1f AU  |  R_HP = %.1f AU  (R_g/20 = %.2f AU)",
-                                       rTS_sw, rHP_sw, engine.heliopauseRadiusAU());
-                    if (ImGui::SmallButton("Apply Wind R_HP to 3D Sphere")) {
-                        renderSettings.customHeliopauseOverride = true;
-                        renderSettings.heliopauseRadiusAU = static_cast<float>(rHP_sw);
-                        renderSettings.showHeliopause = true;
-                    }
-                    ImGui::SameLine();
-                    if (ImGui::SmallButton("Restore Derived R_g/20 Shell")) {
-                        renderSettings.customHeliopauseOverride = false;
-                        renderSettings.heliopauseRadiusAU = static_cast<float>(engine.heliopauseRadiusAU());
-                    }
-                    ImGui::TreePop();
                 }
 
                 ImGui::TreePop();
@@ -857,7 +799,7 @@ void drawTelemetryWindow(TelemetryUIState& ui,
 
             ImGui::Spacing();
             ImGui::TextColored(ImVec4(0.0f, 0.88f, 1.0f, 1.0f),
-                               "Kuiper Belt & Scattered Disk (30.0 - 72.0 AU) — Dodecahedral Cutoffs");
+                               "Kuiper Belt & Scattered Disk (30.0 - 72.0 AU) & Neptune Resonances");
             ImGui::PlotHistogram("##KuiperHist", bs.kuiperBeltHist, BeltStats::KUIPER_BINS,
                                  0, nullptr, 0.0f, FLT_MAX, ImVec2(-1.0f, 115.0f));
             {
@@ -868,16 +810,9 @@ void drawTelemetryWindow(TelemetryUIState& ui,
                 const ImU32 colNep = IM_COL32(90, 220, 255, 225);
                 // Live exterior Neptune resonances a_{p:q} = a_Nep * (p / q)^(2/3)
                 drawVerticalResonanceMarker(pMin, pMax, static_cast<float>(aNep * std::pow(3.0 / 2.0, 2.0 / 3.0)),
-                                            kMin, kMax, "3:2", colNep, 3.0f);
+                                            kMin, kMax, "3:2 Plutino", colNep, 3.0f);
                 drawVerticalResonanceMarker(pMin, pMax, static_cast<float>(aNep * std::pow(2.0 / 1.0, 2.0 / 3.0)),
-                                            kMin, kMax, "2:1", colNep, 3.0f);
-                const double rGravAU = engine.gravitationalFloorAU();
-                if (rGravAU > 0.0) {
-                    drawVerticalResonanceMarker(pMin, pMax, static_cast<float>(rGravAU / KAPPA),
-                                                kMin, kMax, "k=50 Cliff", IM_COL32(50, 255, 195, 240), 20.0f);
-                    drawVerticalResonanceMarker(pMin, pMax, static_cast<float>(rGravAU / C_CHANNELS),
-                                                kMin, kMax, "C=36 Shell", IM_COL32(255, 205, 85, 240), 3.0f);
-                }
+                                            kMin, kMax, "2:1 Cliff", colNep, 3.0f);
             }
 
             ImGui::Spacing();

@@ -235,7 +235,7 @@ void Renderer::init() {
     }
     makeLineVao(grid, m_gridVao, m_gridVbo, m_gridVerts);
 
-    // Reusable unit-radius wireframe sphere (for Heliopause, 3R/4R Vector Channels, Hill Sphere).
+    // Reusable unit-radius wireframe sphere (for Heliopause, 3R/4R/6.784R Magnetosphere, Hill Sphere).
     std::vector<float> sph;
     const int n = 96;
     const float PI = 3.14159265358979f;
@@ -372,7 +372,7 @@ void Renderer::draw(const DrawContext& ctx, const RenderSettings& s) {
     glEnable(GL_BLEND);
     const float* vp = glm::value_ptr(ctx.viewProj);
 
-    // 1. Grid + Heliopause + 3D Boundary Shells (3R/4R Vector Channels, Hill Sphere, Roche Limit)
+    // 1. Grid + Heliopause + 3D Boundary Shells (3R/4R/6.784R Magnetosphere, Hill Sphere, Roche Limit)
     glUseProgram(m_lineProg);
     glUniformMatrix4fv(glGetUniformLocation(m_lineProg, "uViewProj"), 1, GL_FALSE, vp);
     glUniform1i(glGetUniformLocation(m_lineProg, "uLog"), s.logScale);

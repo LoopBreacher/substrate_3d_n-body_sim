@@ -32,7 +32,7 @@ struct HeavySnapshot {
 // GPU-binned statistical mechanics for up to 1.5M+ belt particles (zero particle host readback).
 struct BeltStats {
     static constexpr int MAIN_BINS   = 64;  // a in [2.00, 3.50] AU
-    static constexpr int KUIPER_BINS = 84;  // a in [30.0, 72.0] AU (0.50 AU bins capturing k=50 & C=36 cutoffs)
+    static constexpr int KUIPER_BINS = 84;  // a in [30.0, 72.0] AU (0.50 AU bins capturing Neptune 3:2 & 2:1 resonances)
     static constexpr int ECC_BINS    = 32;  // e in [0.00, 0.50]
 
     static constexpr double KUIPER_MIN_AU = 30.0;
@@ -99,9 +99,11 @@ public:
     const std::vector<double>& mu() const { return m_mu; }
 
     double gravitationalFloorAU() const;
+    double outerOortStagnationAU() const;
+    double terminationShockRadiusAU() const;
     double heliopauseRadiusAU() const;
-    static double heliopauseTopologicalDragAU(double swProtonCm3At1AU = 6.0,
-                                              double swSpeedKms = 420.0,
+    static double heliopauseTopologicalDragAU(double swProtonCm3At1AU = 7.0,
+                                              double swSpeedKms = 440.0,
                                               double heliosheathStagnationFactor = 1.35);
 
     double newtonianEnergy(const HeavySnapshot& s) const;      // heavy system, J

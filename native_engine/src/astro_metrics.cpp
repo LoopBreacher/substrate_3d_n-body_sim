@@ -120,6 +120,7 @@ DomainRadii computeDomainRadii(int bodyIdx, int parentIdx,
     d.core1R_m = R;
     d.vector3R_m = 3.0 * R;
     d.vector4R_m = 4.0 * R;
+    d.rDeltaStagnation_m = C_DELTA_INV_FOURTH_ROOT * R;
 
     // Hill & Laplace SOI relative to parent
     if (parentIdx >= 0 && kep.bound && kep.a_m > 0.0) {

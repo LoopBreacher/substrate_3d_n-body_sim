@@ -41,27 +41,28 @@ struct TrailVertex {
 
 struct RenderSettings {
     bool showGrid = true;
-    bool showHeliopause = false;            // 20-vertex Heliopause wireframe sphere (R_g / 20)
-    bool showDodecahedralShells = true;     // Circumstellar dodecahedral shells: R_g / {50, 36, 30, 27, 20} + R_g
+    bool showHeliopause = false;            // Ram-pressure Heliopause wireframe sphere (120.74 AU)
+    bool showHeliosphereShells = true;      // Termination Shock ring (89.44 AU), Heliopause ring (120.74 AU) & Grav. Floor R_g (2,430.82 AU)
     bool customHeliopauseOverride = false;  // True when user applies custom P_SW wind stagnation radius
     bool showOrbitTrails = true;
-    bool showVectorChannels = true;  // 3R / 4R magnetospheric vector-channel shells
-    bool showHillAndRoche = true;    // Hill sphere & fluid Roche limit overlays
+    bool showVectorChannels = true;         // 1R / 3R / 4R / 6.784R magnetospheric shells
+    bool showHillAndRoche = true;           // Hill sphere & fluid Roche limit overlays
     bool logScale = false;
     bool additiveParticles = true;
     float particleSizeScale = 1.0f;
     float heavySizeScale = 1.0f;
     float particleAlpha = 0.6f;
-    float heliopauseRadiusAU = 121.54f;
+    float terminationShockRadiusAU = 89.44f;
+    float heliopauseRadiusAU = 120.74f;
 };
 
 struct DrawContext {
     glm::mat4 viewProj{1.0f};
     glm::vec3 worldOffsetAU{0.0f};    // -origin position: ecliptic grid is world-anchored
-    glm::vec3 starCenterRelAU{0.0f};  // Root star position: astrosphere / heliopause is star-anchored
+    glm::vec3 starCenterRelAU{0.0f};  // Root star position: heliosphere is star-anchored
     glm::vec2 viewportPx{1.0f};
     std::vector<int> heavyDrawOrder;  // far-to-near (painter's algorithm, no depth buffer)
-    std::vector<OverlayShell> shells; // Dodecahedral shells, 3R/4R vector shells, Hill sphere, Roche limit
+    std::vector<OverlayShell> shells; // Heliospheric rings, 3R/4R/6.784R magnetospheric shells, Hill sphere, Roche limit
 };
 
 class Renderer {

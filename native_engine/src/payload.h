@@ -43,7 +43,7 @@ uint32_t packRGBA(float r, float g, float b, float a);
 // Sun, 8 planets, major moons, and 6 dwarf planets with physical IAU/JPL radii & Keplerian states.
 std::vector<HeavyBodyDesc> buildHeavyBodies();
 
-// Main asteroid belt (2.1-3.3 AU) + Kuiper belt (30-50 AU) on eccentric/inclined Keplerian orbits.
+// Main asteroid belt (2.06-3.35 AU) + Classical Kuiper Belt (30.0-47.8 AU) & Scattered Disk (47.8-68.0 AU).
 ParticleSet buildParticles(size_t numAsteroids, size_t numKBOs, uint64_t seed = 42);
 
 // Splits a total particle budget with the prototype's 1:2 asteroid/KBO ratio.

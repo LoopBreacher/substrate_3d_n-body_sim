@@ -27,12 +27,7 @@ struct ConservationHistory {
 
 struct TelemetryUIState {
     bool showWindow = true;
-    double coarseProbeAU = 121.54;
-
-    // Interactive Dodecahedral Astrosphere & Exoplanet Disk Comparator
-    int astrospherePresetIdx = 0;  // 0: Sun, 1: eps Eri, 2: HR 8799, 3: Fomalhaut, 4: Vega, 5: Custom
-    float customStarMassSolar = 1.00f;
-    float customStarRadiusSolar = 1.00f;
+    double coarseProbeAU = 120.74;
 
     // Solar wind stagnation calculator inputs (ACE/Wind 1 AU solar-cycle mean)
     float swDensity1AU_cm3 = 7.0f;

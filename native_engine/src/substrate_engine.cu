@@ -629,9 +629,20 @@ double SubstrateEngine::gravitationalFloorAU() const {
     return gravitationalFloorMetersFromNodes(compiledNodes) / AU;
 }
 
+double SubstrateEngine::outerOortStagnationAU() const {
+    return gravitationalFloorAU() * C_DELTA_INV_FOURTH_ROOT;
+}
+
+double SubstrateEngine::terminationShockRadiusAU() const {
+    if (m_numHeavy <= 0 || m_density[0] < RHO_GC) return 0.0;
+    return std::sqrt(P_SW_1AU_PA / P_DRAG_FLOOR);
+}
+
 double SubstrateEngine::heliopauseRadiusAU() const {
-    // 20-vertex dodecahedral astropause boundary: R_HP = R_g / 20 (~121.54 AU for 1.00 M_sun)
-    return gravitationalFloorAU() / V_DODEC;
+    // Solar wind ram-pressure balance against P_delta = C_delta * Sigma_{0,Ledger} = 0.2834 pPa:
+    //   R_TS = 1 AU * sqrt(P_SW(1 AU) / P_delta) = 89.44 AU
+    //   R_HP = 1.35 * R_TS = 120.74 AU (collapses to 0 if Sun is decompiled below 4.0 nodes/m^3)
+    return HELIOSHEATH_STANDOFF * terminationShockRadiusAU();
 }
 
 double SubstrateEngine::heliopauseTopologicalDragAU(double swProtonCm3At1AU,

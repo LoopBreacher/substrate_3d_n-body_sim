@@ -268,13 +268,6 @@ ParticleSet buildParticles(size_t numAsteroids, size_t numKBOs, uint64_t seed) {
     const double nSun = M_SUN / M_P;
     const double muSun = nSun * K_OMEGA;
 
-    // Dodecahedral circumstellar boundaries derived directly from the Sun's integer node load:
-    //   R_g(N_sun) / 50 = ~48.62 AU (Classical Kuiper Cliff truncation)
-    //   R_g(N_sun) / 36 = ~67.52 AU (36-channel Scattered Disk envelope; cf. Eris SMA = 67.86 AU)
-    const double rGravSunAU   = gravitationalFloorMetersFromNodes(nSun) / AU;
-    const double rKuiperCliff = rGravSunAU / KAPPA;
-    const double rScattered36 = rGravSunAU / C_CHANNELS;
-
     auto populateBelt = [&](size_t n, double aMinAU, double aMaxAU,
                             double eMin, double eMax,
                             double incSigmaDeg, uint32_t rgba, float pxSize) {
@@ -309,11 +302,11 @@ ParticleSet buildParticles(size_t numAsteroids, size_t numKBOs, uint64_t seed) {
     // 1. Main Asteroid Belt (2.06 - 3.35 AU)
     populateBelt(numAsteroids, 2.06, 3.35, 0.002, 0.14, 5.5,
                  packRGBA(0.64f, 0.62f, 0.58f, 0.52f), 2.0f);
-    // 2. Classical Kuiper Belt (30.0 AU -> derived k=50 Kuiper Cliff ~48.62 AU, 90% of trans-Neptunian belt)
-    populateBelt(nClassicalKBO, 30.0, rKuiperCliff, 0.002, 0.15, 6.0,
+    // 2. Classical Kuiper Belt (30.0 - 47.8 AU, bounded by Neptune 2:1 mean-motion resonance, 90% of KBOs)
+    populateBelt(nClassicalKBO, 30.0, 47.8, 0.002, 0.15, 6.0,
                  packRGBA(0.35f, 0.68f, 0.90f, 0.42f), 2.0f);
-    // 3. Sparse Scattered Disk (k=50 Cliff ~48.62 AU -> C=36 Routing Shell ~67.52 AU, 10% tail)
-    populateBelt(nScatteredKBO, rKuiperCliff, rScattered36, 0.15, 0.38, 14.0,
+    // 3. Sparse Scattered Disk (47.8 - 68.0 AU, 10% eccentric trans-Neptunian tail)
+    populateBelt(nScatteredKBO, 47.8, 68.0, 0.15, 0.38, 14.0,
                  packRGBA(0.48f, 0.60f, 0.96f, 0.36f), 2.0f);
     return ps;
 }
