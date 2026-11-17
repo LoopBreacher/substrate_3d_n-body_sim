@@ -31,10 +31,12 @@ struct HeavySnapshot {
 
 // GPU-binned statistical mechanics for up to 1.5M+ belt particles (zero particle host readback).
 struct BeltStats {
-    static constexpr int MAIN_BINS   = 64;  // a in [2.00, 3.50] AU
+    static constexpr int MAIN_BINS   = 96;  // a in [1.90, 5.50] AU (captures Main Belt Kirkwood gaps, 3:2 Hildas & 1:1 Jupiter Trojans)
     static constexpr int KUIPER_BINS = 84;  // a in [30.0, 72.0] AU (0.50 AU bins capturing Neptune 3:2 & 2:1 resonances)
     static constexpr int ECC_BINS    = 32;  // e in [0.00, 0.50]
 
+    static constexpr double MAIN_MIN_AU   = 1.90;
+    static constexpr double MAIN_MAX_AU   = 5.50;
     static constexpr double KUIPER_MIN_AU = 30.0;
     static constexpr double KUIPER_MAX_AU = 72.0;
 

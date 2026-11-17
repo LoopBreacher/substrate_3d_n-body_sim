@@ -733,7 +733,7 @@ void drawTelemetryWindow(TelemetryUIState& ui,
             ImGui::Spacing();
             ImGui::Separator();
             ImGui::TextColored(ImVec4(0.0f, 0.88f, 1.0f, 1.0f),
-                               "Symplectic Velocity-Verlet Conservation Audit");
+                               "Symplectic 4th-Order PEFRL + Kahan Conservation Audit");
             const double curE = engine.newtonianEnergy(snap);
             const double curL = engine.angularMomentumMag(snap);
             const double vBary = engine.barycenterDriftSpeed(snap);
@@ -783,18 +783,23 @@ void drawTelemetryWindow(TelemetryUIState& ui,
             const BeltStats& bs = ui.beltStats;
             ImGui::Spacing();
             ImGui::TextColored(ImVec4(0.0f, 0.88f, 1.0f, 1.0f),
-                               "Main Asteroid Belt Semi-Major Axis (2.00 - 3.50 AU) & Kirkwood Resonances");
+                               "Inner System Semi-Major Axis (1.90 - 5.50 AU): Main Belt, 3:2 Hildas & 1:1 Trojans");
             ImGui::PlotHistogram("##MainBeltHist", bs.mainBeltHist, BeltStats::MAIN_BINS,
                                  0, nullptr, 0.0f, FLT_MAX, ImVec2(-1.0f, 115.0f));
             {
                 const ImVec2 pMin = ImGui::GetItemRectMin();
                 const ImVec2 pMax = ImGui::GetItemRectMax();
-                const ImU32 colRes = IM_COL32(255, 95, 95, 220);
+                const float mMin = static_cast<float>(BeltStats::MAIN_MIN_AU);
+                const float mMax = static_cast<float>(BeltStats::MAIN_MAX_AU);
+                const ImU32 colRes    = IM_COL32(255, 95, 95, 220);
+                const ImU32 colHilda  = IM_COL32(255, 195, 75, 230);
+                const ImU32 colTrojan = IM_COL32(75, 235, 165, 230);
                 // Live Kepler 3rd-law resonance locations a_{p:q} = a_Jup * (q / p)^(2/3)
-                drawVerticalResonanceMarker(pMin, pMax, static_cast<float>(aJup * std::pow(1.0 / 3.0, 2.0 / 3.0)), 2.00f, 3.50f, "3:1", colRes);
-                drawVerticalResonanceMarker(pMin, pMax, static_cast<float>(aJup * std::pow(2.0 / 5.0, 2.0 / 3.0)), 2.00f, 3.50f, "5:2", colRes);
-                drawVerticalResonanceMarker(pMin, pMax, static_cast<float>(aJup * std::pow(3.0 / 7.0, 2.0 / 3.0)), 2.00f, 3.50f, "7:3", colRes);
-                drawVerticalResonanceMarker(pMin, pMax, static_cast<float>(aJup * std::pow(1.0 / 2.0, 2.0 / 3.0)), 2.00f, 3.50f, "2:1", colRes);
+                drawVerticalResonanceMarker(pMin, pMax, static_cast<float>(aJup * std::pow(1.0 / 3.0, 2.0 / 3.0)), mMin, mMax, "3:1", colRes);
+                drawVerticalResonanceMarker(pMin, pMax, static_cast<float>(aJup * std::pow(2.0 / 5.0, 2.0 / 3.0)), mMin, mMax, "5:2", colRes);
+                drawVerticalResonanceMarker(pMin, pMax, static_cast<float>(aJup * std::pow(1.0 / 2.0, 2.0 / 3.0)), mMin, mMax, "2:1", colRes);
+                drawVerticalResonanceMarker(pMin, pMax, static_cast<float>(aJup * std::pow(2.0 / 3.0, 2.0 / 3.0)), mMin, mMax, "3:2 Hilda", colHilda);
+                drawVerticalResonanceMarker(pMin, pMax, static_cast<float>(aJup), mMin, mMax, "1:1 Trojan (L4/L5)", colTrojan);
             }
 
             ImGui::Spacing();

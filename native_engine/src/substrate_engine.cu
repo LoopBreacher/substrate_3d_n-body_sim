@@ -401,9 +401,10 @@ __global__ void beltStatsKernel(const double* __restrict__ p, size_t N,
                 const double cosInc = fmin(fmax(hz / hMag, -1.0), 1.0);
                 const double incDeg = acos(cosInc) * RAD2DEG;
 
-                // Main Belt histogram [2.00, 3.50] AU
-                if (a_AU >= 2.00 && a_AU < 3.50) {
-                    int bin = static_cast<int>((a_AU - 2.00) / 1.50 * BeltStats::MAIN_BINS);
+                // Inner System histogram [1.90, 5.50] AU (Main Belt Kirkwood gaps, 3:2 Hildas & 1:1 Trojans)
+                if (a_AU >= BeltStats::MAIN_MIN_AU && a_AU < BeltStats::MAIN_MAX_AU) {
+                    constexpr double span = BeltStats::MAIN_MAX_AU - BeltStats::MAIN_MIN_AU;
+                    int bin = static_cast<int>((a_AU - BeltStats::MAIN_MIN_AU) / span * BeltStats::MAIN_BINS);
                     bin = min(max(bin, 0), BeltStats::MAIN_BINS - 1);
                     atomicAdd(&sBins[bin], 1u);
                 }

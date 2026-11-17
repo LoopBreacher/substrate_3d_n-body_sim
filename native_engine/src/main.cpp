@@ -159,6 +159,8 @@ int runBenchmarkSuite() {
         const double rHP_AU      = engine.heliopauseRadiusAU();
 
         std::printf("[Substrate Logistics Bare-Metal Hardware Audit]\n");
+        std::printf("  Coupled Heavy Bodies              : %zu (Sun, 8 Planets, 21 Moons, 13 Dwarf/Trojan/Comet)\n",
+                    heavy.size());
         std::printf("  Exact C_delta                     : %.12e  ((sqrt(5) - 2) / 500)\n", C_DELTA);
         std::printf("  Linear Drag sqrt(C_d)             : %.12f  (Void Om_m = %.6f, Global Om_m = %.6f)\n",
                     SQRT_C_DELTA, OMEGA_M_VOID, OMEGA_M_GLOBAL);
