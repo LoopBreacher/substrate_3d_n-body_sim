@@ -213,19 +213,52 @@ int runBenchmarkSuite() {
         const double L1 = engine.angularMomentumMag(s1);
         const double relEDrift = std::abs((E1 - E0) / E0);
         const double relLDrift = std::abs((L1 - L0) / L0);
-        const auto earthKep1 = computeKeplerElements(3, 0, s1, engine);
+        const auto earthKep1  = computeKeplerElements(3, 0, s1, engine);
+        const auto phobosKep1 = computeKeplerElements(6, 5, s1, engine);
 
         // Verify GPU BeltStats kernel
         BeltStats bs{};
         engine.computeBeltStats(bs, 5.2044);
 
-        std::printf("[Physics Verification - 1 Julian Year (29,220 Moon Sub-steps)]\n");
+        std::printf("[Physics Verification - 1 Julian Year (4th-Order PEFRL + Kahan, substeps=20)]\n");
         std::printf("  Earth Semi-Major Axis  : %.6f AU (initial %.6f AU, e = %.5f)\n",
                     earthKep1.a_AU, earthKep0.a_AU, earthKep1.e);
+        std::printf("  Phobos 1-Yr Orbit      : a = %.2f km (initial %.2f km), e = %.5f (%s)\n",
+                    phobosKep1.a_m / 1000.0, phobosKep.a_m / 1000.0, phobosKep1.e,
+                    phobosKep1.bound ? "BOUND" : "UNBOUND");
         std::printf("  Relative Energy Drift  : %.3e\n", relEDrift);
         std::printf("  Relative AngMom Drift  : %.3e\n", relLDrift);
         std::printf("  GPU Belt Stats Check   : %u bound (%u asteroidal, <e>=%.4f, <i>=%.2f deg)\n\n",
                     bs.boundCount, bs.asteroidalCount, bs.meanEcc, bs.meanIncDeg);
+
+        // Extreme CFL Torture Test: Macro dt = 48.0 hours, UI substeps = 1 (1 Julian Year = 183 steps)
+        engine.load(heavy, particles, true);
+        StepParams spExtreme;
+        spExtreme.dtSeconds = 48.0 * 3600.0;
+        spExtreme.substeps = 1;
+        spExtreme.relativistic = true;
+        spExtreme.precision = Precision::FP64;
+        for (int i = 0; i < 183; ++i) {
+            engine.step(spExtreme, i == 182);
+        }
+        const auto sExtreme = engine.snapshot();
+        const auto phobosExtreme = computeKeplerElements(6, 5, sExtreme, engine);
+
+        // GC Sandbox Unbinding Check at Macro dt = 48.0 h, substeps = 1: Decompile Mars (rho_N = 1.0 < 4.0)
+        engine.setDensityOverride(5, true, 1.0, true);
+        engine.step(spExtreme, true);
+        const auto sDecomp = engine.snapshot();
+        const double dxP = sDecomp.pos[6 * 3 + 0] - sDecomp.pos[5 * 3 + 0];
+        const double dyP = sDecomp.pos[6 * 3 + 1] - sDecomp.pos[5 * 3 + 1];
+        const double dzP = sDecomp.pos[6 * 3 + 2] - sDecomp.pos[5 * 3 + 2];
+        const double rPhobosAfterDecompKm = std::sqrt(dxP * dxP + dyP * dyP + dzP * dzP) / 1000.0;
+
+        std::printf("[CFL Dynamical Frequency Subdivision Torture Test (dt = 48.0 h, substeps = 1)]\n");
+        std::printf("  Phobos 1-Yr (dt=48h, sub=1): a = %.2f km, e = %.5f (%s)\n",
+                    phobosExtreme.a_m / 1000.0, phobosExtreme.e,
+                    phobosExtreme.bound ? "BOUND" : "UNBOUND");
+        std::printf("  GC Mars Decompile (Theta=0): Phobos tangent escape r = %.1f km (UNBOUND)\n\n",
+                    rPhobosAfterDecompKm);
     }
 
     // 2. Scaling throughput across particle counts (3k -> 1M)

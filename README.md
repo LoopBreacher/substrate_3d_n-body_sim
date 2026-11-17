@@ -232,7 +232,7 @@ Configured once at startup in [`payload.cpp`](native_engine/src/payload.cpp):
 ### 4.3. Computed 100% Live at Runtime
 
 Executed continuously in [`substrate_engine.cu`](native_engine/src/substrate_engine.cu) and [`astro_metrics.cpp`](native_engine/src/astro_metrics.cpp):
-* **All 3D Positions, Velocities & Accelerations**: Integrated every frame on the GPU via 2nd-order symplectic Velocity Verlet (`heavySubstepKernel` + `particleStepKernel`).
+* **All 3D Positions, Velocities & Accelerations**: Integrated every frame on the GPU via **4th-order Omelyan PEFRL symplectic composition with Kahan–Babuška–Neumaier compensated summation** for all 25 mutually coupled heavy bodies (`heavySubstepKernel`) and 2nd-order symplectic Velocity Verlet for test particles (`particleStepKernel`).
 * **Garbage Collection Gate** $`\Theta(\rho_N - 4.0)`$: Evaluated dynamically; overriding $`\rho_N \lt 4.0\,\mathrm{nodes/m^3}`$ updates `d_mu` in GPU memory and physically unbinds satellites in real time.
 * **Dynamic Heliospheric Ram-Pressure Boundaries & Oort Floor**: `terminationShockRadiusAU()` (`89.44 AU`), `heliopauseRadiusAU()` (`120.74 AU`), `gravitationalFloorAU()` (`2,430.82 AU`), and `outerOortStagnationAU()` (`16,490.6 AU`) are evaluated live (collapsing dynamically to `0` if the Sun is decompiled below `4.0 nodes/m^3` in the GC Sandbox).
 * **Osculating Keplerian Elements**: $`(a, e, i, \Omega, \omega, \nu, q, Q, T)`$ are **reverse-computed every frame** from raw instantaneous GPU $`(\mathbf{r}(t), \mathbf{v}(t))`$ vectors, capturing live multi-body perturbations.
@@ -284,7 +284,7 @@ Executed continuously in [`substrate_engine.cu`](native_engine/src/substrate_eng
 ```mermaid
 flowchart LR
     subgraph GPU["NVIDIA GPU (CUDA 13 + OpenGL 4.6 VRAM)"]
-        H["heavySubstepKernel<br/>(1 Block Shared Mem, FP64,<br/>20 Verlet Sub-steps Fused)"]
+        H["heavySubstepKernel<br/>(1 Block Shared Mem, FP64 + Kahan,<br/>4th-Order PEFRL Symplectic)"]
         P["particleStepKernel&lt;MIXED&gt;<br/>(FP64 State + Dual FP32 Accel,<br/>Up to 1.5M+ Threads)"]
         W["writeRenderKernel<br/>(FP64 Camera-Origin Shift -> FP32 AU)"]
         VBO["Mapped OpenGL VBOs<br/>(cudaGraphicsGLRegisterBuffer)"]
@@ -300,7 +300,7 @@ flowchart LR
 ```
 
 ### Key Numerical & Rendering Optimizations
-* **Fused Shared-Memory Heavy Sub-Stepping**: All 25 mutually coupled heavy bodies execute all 20 Velocity-Verlet moon sub-steps inside **one thread block** (`__shared__` memory) in a single kernel launch (`≈ 8 µs` total), achieving `9.5e-10` relative energy conservation and `2.2e-12` angular momentum conservation per Julian year.
+* **4th-Order Omelyan PEFRL + Kahan–Babuška + Dynamic CFL Sub-Stepping**: All 25 mutually coupled heavy bodies execute Omelyan's 4th-order Position-Extended Forest-Ruth-Like (`PEFRL`) 5-Drift, 4-Kick symplectic composition inside **one thread block** (`__shared__` memory) with Kahan–Babuška–Neumaier compensated summation (`106-bit` effective mantissa in registers) and **instantaneous Courant–Friedrichs–Lewy (CFL) dynamical frequency subdivision** ($`\omega_{\max} = \sqrt{\max_{i \neq j}(\mu_i + \mu_j)/r_{ij}^3}`$, Courant limit $`\eta_{\mathrm{CFL}} = 0.50\,\mathrm{rad}`$). This guarantees unconditional numerical stability across all UI slider combinations (`Macro dt` up to `48 h`, `Moon Sub-steps` down to `1`) without body-specific overrides, while preserving instantaneous tangent escape when any parent body is decompiled ($`\Theta(\rho_N - 4) = 0`$).
 * **Dual-Accumulator Mixed Precision (`Precision::Mixed`)**: Test-particle positions and velocities remain in **IEEE FP64**, while pairwise force loops run in FP32 AU coordinates using **two separate accumulators** (`axN` for primary deletion and `axR` for the $`\sim 10^{-8}`$ relativistic precession term) so 1PN precession is never lost to FP32 mantissa rounding. Full IEEE FP64 mode (`Precision::FP64`) is selectable at runtime with one click.
 * **Camera-Relative Origin Shifting**: When locked onto any planet or moon (even Pluto/Charon at `39.5 AU`), `writeRenderKernel` subtracts the target's exact FP64 position *before* casting to FP32, completely eliminating vertex jitter down to kilometer scales.
 * **Zero-Copy VBO Rendering**: CUDA writes rendered positions directly into OpenGL 4.6 vertex buffers; zero particle positions are copied back to system RAM.
@@ -328,7 +328,8 @@ flowchart LR
 | **Solar Wind Heliopause** ($`R_{\mathrm{HP}}`$) | `120.74 AU` | `119.0–121.6 AU` (Voyager 2 / 1) |
 | **Solar Gravitational Floor & Oort Core** ($`R_g`$ / $`6.784 R_g`$) | `2,430.82 AU` / `16,490.6 AU` | Inner Hills cloud / Outer Oort core transition |
 | **Galactic 2D Disk Truncation Ratio** ($`R_{\mathrm{trunc}} / R_d`$) | `3.829 R_d` | `3.8 ± 0.7 R_d` observed edge-on spiral mean |
-| **1-Year Symplectic Energy / AngMom Drift** | `9.495e-10` / `2.241e-12` | 29,220 moon sub-steps |
+| **Phobos 1-Yr Orbit** (`substeps = 20`) | `a = 9,376.01 km`, `e = 0.01512` (`BOUND`) | `a_0 = 9,376.00 km`, `e_0 = 0.01510` (`1,145` orbits) |
+| **1-Year Symplectic Energy / AngMom Drift** | `2.901e-10` / `1.917e-12` | 4th-Order PEFRL + Kahan (`substeps = 20`) |
 
 #### CUDA Physics Kernel Scaling (25 Heavy Bodies + N Test Particles, 20 Sub-steps/Step)
 | Particle Count ($`N`$) | Precision Mode | GPU Step Time | Physics Rate | Interaction Throughput | Physics VRAM | Full GUI + Overlays FPS |

@@ -4,7 +4,10 @@
 //   g_Omega      = N_j * K_Omega * Theta(rho_N_j - 4.0) / R^2
 //   1PN factor   = 1 + 3 * N_j * K_Omega / (c^2 * R)
 //   a_i          = sum_j g_Omega * (1PN factor) * (r_j - r_i) / R,  R >= 1 m
-// Integration: 2nd-order symplectic Velocity Verlet; heavy bodies sub-stepped in shared memory.
+// Integration:
+//   - Heavy bodies: 4th-order Omelyan PEFRL symplectic composition with Kahan-Babuska-Neumaier
+//     compensated summation in shared memory.
+//   - Test particles: 2nd-order symplectic Velocity Verlet (FP64 or Dual-Accumulator Mixed).
 
 #include "substrate_engine.h"
 #include "substrate_constants.h"
@@ -31,6 +34,28 @@ constexpr double RAD2DEG = 180.0 / 3.14159265358979323846;
 
 // Total integer bins: MAIN_BINS + KUIPER_BINS + ECC_BINS + 5 regime counters
 constexpr int TOTAL_INT_BINS = BeltStats::MAIN_BINS + BeltStats::KUIPER_BINS + BeltStats::ECC_BINS + 5;
+
+// Omelyan, Mryglod & Folk (2002) 4th-Order PEFRL Symplectic Composition Weights:
+// Palindromic 5-Drift, 4-Kick sequence:
+//   Drift(a1) -> Kick(b1) -> Drift(a2) -> Kick(b2) -> Drift(a3) -> Kick(b2) -> Drift(a2) -> Kick(b1) -> Drift(a1)
+// Satisfies 2*PEFRL_XI + 2*PEFRL_CHI + PEFRL_A3 == 1.0 and 2*PEFRL_B1 + 2*PEFRL_LAMBDA == 1.0 exactly.
+constexpr double PEFRL_XI     = +0.1786178958448091e0;
+constexpr double PEFRL_LAMBDA = -0.2123418310626054e0;
+constexpr double PEFRL_CHI    = -0.06626458266981849e0;
+constexpr double PEFRL_A3     = 1.0 - 2.0 * (PEFRL_CHI + PEFRL_XI); // +0.7752933736500188
+constexpr double PEFRL_B1     = 0.5 * (1.0 - 2.0 * PEFRL_LAMBDA);   // +0.7123418310626054
+
+// Kahan-Babuska-Neumaier compensated accumulation (106-bit effective mantissa in registers)
+// Prevents precision loss when adding small moon displacements to large heliocentric coordinates.
+__device__ __forceinline__ void kahanAdd(double& sum, double& comp, double delta) {
+    const double t = sum + delta;
+    if (fabs(sum) >= fabs(delta)) {
+        comp += (sum - t) + delta;
+    } else {
+        comp += (delta - t) + sum;
+    }
+    sum = t;
+}
 
 // ---------------------------------------------------------------------------
 // Heavy bodies: fully coupled FP64, one block, one thread per body.
@@ -78,34 +103,126 @@ __global__ void heavySubstepKernel(double* __restrict__ st, const double* __rest
                                    const double* __restrict__ rc, int M, bool rel,
                                    double dt, int substeps) {
     __shared__ double sx[MAX_HEAVY], sy[MAX_HEAVY], sz[MAX_HEAVY], smu[MAX_HEAVY], src[MAX_HEAVY];
+    __shared__ double sMaxOmega2[MAX_HEAVY];
+    __shared__ int sEffectiveSubsteps;
+
     const int i = threadIdx.x;
     const bool active = i < M;
+    const double macroDt = dt * static_cast<double>(substeps);
 
-    double x = 0, y = 0, z = 0, vx = 0, vy = 0, vz = 0, ax = 0, ay = 0, az = 0;
+    double x = 0.0, y = 0.0, z = 0.0;
+    double vx = 0.0, vy = 0.0, vz = 0.0;
+    double ax = 0.0, ay = 0.0, az = 0.0;
+    // Kahan-Babuska compensation registers for double-double precision across sub-steps
+    double cx = 0.0, cy = 0.0, cz = 0.0;
+    double cvx = 0.0, cvy = 0.0, cvz = 0.0;
+
     if (active) {
         x = st[i];          y = st[M + i];      z = st[2 * M + i];
         vx = st[3 * M + i]; vy = st[4 * M + i]; vz = st[5 * M + i];
         ax = st[6 * M + i]; ay = st[7 * M + i]; az = st[8 * M + i];
+        sx[i] = x;
+        sy[i] = y;
+        sz[i] = z;
         smu[i] = mu[i];
         src[i] = (rel && mu[i] > 0.0) ? rc[i] : 0.0;
     }
+    __syncthreads();
 
-    const double h = 0.5 * dt;
-    for (int k = 0; k < substeps; ++k) {
-        if (active) {
-            vx = fma(h, ax, vx); vy = fma(h, ay, vy); vz = fma(h, az, vz);
-            x = fma(vx, dt, x);  y = fma(vy, dt, y);  z = fma(vz, dt, z);
-        }
-        __syncthreads();
-        if (active) { sx[i] = x; sy[i] = y; sz[i] = z; }
-        __syncthreads();
-        if (active) {
-            heavyAccel(i, x, y, z, sx, sy, sz, smu, src, M, ax, ay, az);
-            vx = fma(h, ax, vx); vy = fma(h, ay, vy); vz = fma(h, az, vz);
+    // Instantaneous Courant-Friedrichs-Lewy (CFL) dynamical orbital-frequency subdivision:
+    // omega_max = sqrt(max_{i != j} ((mu[i] + mu[j]) / r_ij^3))
+    double localMaxOmega2 = 0.0;
+    if (active) {
+        for (int j = 0; j < M; ++j) {
+            if (j == i) continue;
+            const double muPair = smu[i] + smu[j];
+            if (muPair <= 0.0) continue;
+            const double dx = sx[j] - x;
+            const double dy = sy[j] - y;
+            const double dz = sz[j] - z;
+            const double d2 = fmax(fma(dx, dx, fma(dy, dy, dz * dz)), 1.0);
+            const double invR = rsqrt(d2);
+            const double omega2 = muPair * invR * invR * invR;
+            localMaxOmega2 = fmax(localMaxOmega2, omega2);
         }
     }
+    sMaxOmega2[i] = localMaxOmega2;
+    __syncthreads();
 
+    if (i == 0) {
+        double sysMaxOmega2 = 0.0;
+        for (int j = 0; j < M; ++j) {
+            sysMaxOmega2 = fmax(sysMaxOmega2, sMaxOmega2[j]);
+        }
+        const double omegaMax = sqrt(sysMaxOmega2);
+        // Symplectic Courant number eta_CFL = 0.50 rad per PEFRL sub-step (~12.6 sub-steps per fastest orbit)
+        constexpr double ETA_CFL = 0.50;
+        const int cflSubsteps = (omegaMax > 0.0)
+            ? static_cast<int>(ceil((omegaMax * fabs(macroDt)) / ETA_CFL))
+            : 1;
+        sEffectiveSubsteps = max(substeps, max(1, cflSubsteps));
+    }
+    __syncthreads();
+
+    const int actualSubsteps = sEffectiveSubsteps;
+    const double subDt = macroDt / static_cast<double>(actualSubsteps);
+
+    const double dtA1 = PEFRL_XI * subDt;
+    const double dtA2 = PEFRL_CHI * subDt;
+    const double dtA3 = PEFRL_A3 * subDt;
+    const double dtB1 = PEFRL_B1 * subDt;
+    const double dtB2 = PEFRL_LAMBDA * subDt;
+
+    auto drift = [&](double dtStage) {
+        if (active) {
+            kahanAdd(x, cx, vx * dtStage);
+            kahanAdd(y, cy, vy * dtStage);
+            kahanAdd(z, cz, vz * dtStage);
+        }
+    };
+
+    auto syncAndKick = [&](double dtKick) {
+        __syncthreads();
+        if (active) {
+            sx[i] = x + cx;
+            sy[i] = y + cy;
+            sz[i] = z + cz;
+        }
+        __syncthreads();
+        if (active) {
+            heavyAccel(i, sx[i], sy[i], sz[i], sx, sy, sz, smu, src, M, ax, ay, az);
+            kahanAdd(vx, cvx, ax * dtKick);
+            kahanAdd(vy, cvy, ay * dtKick);
+            kahanAdd(vz, cvz, az * dtKick);
+        }
+    };
+
+    for (int k = 0; k < actualSubsteps; ++k) {
+        drift(dtA1);
+        syncAndKick(dtB1);
+
+        drift(dtA2);
+        syncAndKick(dtB2);
+
+        drift(dtA3);
+        syncAndKick(dtB2);
+
+        drift(dtA2);
+        syncAndKick(dtB1);
+
+        drift(dtA1);
+    }
+
+    // Finalize compensated state and compute exact end-of-step acceleration
+    __syncthreads();
     if (active) {
+        x += cx;   y += cy;   z += cz;
+        vx += cvx; vy += cvy; vz += cvz;
+        sx[i] = x; sy[i] = y; sz[i] = z;
+    }
+    __syncthreads();
+    if (active) {
+        heavyAccel(i, x, y, z, sx, sy, sz, smu, src, M, ax, ay, az);
         st[i] = x;          st[M + i] = y;      st[2 * M + i] = z;
         st[3 * M + i] = vx; st[4 * M + i] = vy; st[5 * M + i] = vz;
         st[6 * M + i] = ax; st[7 * M + i] = ay; st[8 * M + i] = az;

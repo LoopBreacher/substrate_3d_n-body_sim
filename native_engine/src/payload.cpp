@@ -124,58 +124,65 @@ std::vector<HeavyBodyDesc> buildHeavyBodies() {
 
     // 3-4. Earth + Moon (R_Earth = 6,371.0 km -> rho_N = 3.297e30 nodes/m^3, matching Paper 1 Sec 8.4)
     const double mEarth = 5.9722e24;
-    const double muEarth = (mEarth / M_P) * K_OMEGA;
+    const double mMoon  = 7.342e22;
+    const double muEarthMoon = ((mEarth + mMoon) / M_P) * K_OMEGA;
     const auto earthS = keplerState(muSun, 1.000000 * AU, 0.01671, 0.000, 0.0, 102.94, 0.0);
     h.push_back(body("Earth", "Sun", BodyCategory::Planet,
                      mEarth, 6.3710e6, earthS, 0.20f, 0.58f, 1.00f, 9.0f));
 
-    const auto moonRel = keplerState(muEarth, 3.8440e8, 0.0549, 5.145, 125.0, 318.0, 40.0);
+    const auto moonRel = keplerState(muEarthMoon, 3.8440e8, 0.0549, 5.145, 125.0, 318.0, 40.0);
     h.push_back(body("Moon", "Earth", BodyCategory::Moon,
-                     7.342e22, 1.7374e6, offsetState(earthS, moonRel), 0.82f, 0.82f, 0.85f, 4.0f));
+                     mMoon, 1.7374e6, offsetState(earthS, moonRel), 0.82f, 0.82f, 0.85f, 4.0f));
 
     // 5-7. Mars + Phobos + Deimos (Phobos at 9,376 km hovers right near Mars's fluid Roche limit!)
-    const double mMars = 6.4171e23;
-    const double muMars = (mMars / M_P) * K_OMEGA;
+    const double mMars   = 6.4171e23;
+    const double mPhobos = 1.0659e16;
+    const double mDeimos = 1.4762e15;
+    const double muMarsPhobos = ((mMars + mPhobos) / M_P) * K_OMEGA;
+    const double muMarsDeimos = ((mMars + mDeimos) / M_P) * K_OMEGA;
     const auto marsS = keplerState(muSun, 1.523679 * AU, 0.0934, 1.850, 49.56, 286.50, 205.0);
     h.push_back(body("Mars", "Sun", BodyCategory::Planet,
                      mMars, 3.3895e6, marsS, 1.00f, 0.36f, 0.20f, 7.0f));
 
-    const auto phobosRel = keplerState(muMars, 9.376e6, 0.0151, 1.09, 0.0, 0.0, 25.0);
+    const auto phobosRel = keplerState(muMarsPhobos, 9.376e6, 0.0151, 1.09, 0.0, 0.0, 25.0);
     h.push_back(body("Phobos", "Mars", BodyCategory::Moon,
-                     1.0659e16, 1.1267e4, offsetState(marsS, phobosRel), 0.72f, 0.54f, 0.42f, 3.0f));
+                     mPhobos, 1.1267e4, offsetState(marsS, phobosRel), 0.72f, 0.54f, 0.42f, 3.0f));
 
-    const auto deimosRel = keplerState(muMars, 2.3463e7, 0.00033, 1.79, 0.0, 0.0, 165.0);
+    const auto deimosRel = keplerState(muMarsDeimos, 2.3463e7, 0.00033, 1.79, 0.0, 0.0, 165.0);
     h.push_back(body("Deimos", "Mars", BodyCategory::Moon,
-                     1.4762e15, 6.20e3, offsetState(marsS, deimosRel), 0.62f, 0.46f, 0.44f, 3.0f));
+                     mDeimos, 6.20e3, offsetState(marsS, deimosRel), 0.62f, 0.46f, 0.44f, 3.0f));
 
     // 8-12. Jupiter + Galilean Moons (Io, Europa, Ganymede, Callisto)
     const double mJup = 1.8982e27;
-    const double muJup = (mJup / M_P) * K_OMEGA;
+    const double mIo  = 8.9319e22;
+    const double mEur = 4.7998e22;
+    const double mGan = 1.4819e23;
+    const double mCal = 1.0759e23;
     const auto jupS = keplerState(muSun, 5.2044 * AU, 0.0489, 1.303, 100.46, 273.87, 65.0);
     h.push_back(body("Jupiter", "Sun", BodyCategory::Planet,
                      mJup, 6.9911e7, jupS, 0.88f, 0.58f, 0.36f, 14.0f));
 
-    h.push_back(body("Io", "Jupiter", BodyCategory::Moon, 8.9319e22, 1.8216e6,
-                     offsetState(jupS, keplerState(muJup, 4.2170e8, 0.0041, 0.05, 0.0, 0.0, 0.0)),
+    h.push_back(body("Io", "Jupiter", BodyCategory::Moon, mIo, 1.8216e6,
+                     offsetState(jupS, keplerState(((mJup + mIo) / M_P) * K_OMEGA, 4.2170e8, 0.0041, 0.05, 0.0, 0.0, 0.0)),
                      0.96f, 0.92f, 0.22f, 3.5f));
-    h.push_back(body("Europa", "Jupiter", BodyCategory::Moon, 4.7998e22, 1.5608e6,
-                     offsetState(jupS, keplerState(muJup, 6.7103e8, 0.0090, 0.47, 0.0, 0.0, 95.0)),
+    h.push_back(body("Europa", "Jupiter", BodyCategory::Moon, mEur, 1.5608e6,
+                     offsetState(jupS, keplerState(((mJup + mEur) / M_P) * K_OMEGA, 6.7103e8, 0.0090, 0.47, 0.0, 0.0, 95.0)),
                      0.72f, 0.86f, 0.96f, 3.5f));
-    h.push_back(body("Ganymede", "Jupiter", BodyCategory::Moon, 1.4819e23, 2.6341e6,
-                     offsetState(jupS, keplerState(muJup, 1.0704e9, 0.0013, 0.20, 0.0, 0.0, 195.0)),
+    h.push_back(body("Ganymede", "Jupiter", BodyCategory::Moon, mGan, 2.6341e6,
+                     offsetState(jupS, keplerState(((mJup + mGan) / M_P) * K_OMEGA, 1.0704e9, 0.0013, 0.20, 0.0, 0.0, 195.0)),
                      0.64f, 0.64f, 0.66f, 4.2f));
-    h.push_back(body("Callisto", "Jupiter", BodyCategory::Moon, 1.0759e23, 2.4103e6,
-                     offsetState(jupS, keplerState(muJup, 1.8827e9, 0.0074, 0.19, 0.0, 0.0, 290.0)),
+    h.push_back(body("Callisto", "Jupiter", BodyCategory::Moon, mCal, 2.4103e6,
+                     offsetState(jupS, keplerState(((mJup + mCal) / M_P) * K_OMEGA, 1.8827e9, 0.0074, 0.19, 0.0, 0.0, 290.0)),
                      0.46f, 0.46f, 0.54f, 4.0f));
 
     // 13-14. Saturn + Titan
     const double mSat = 5.6834e26;
-    const double muSat = (mSat / M_P) * K_OMEGA;
+    const double mTit = 1.3452e23;
     const auto satS = keplerState(muSun, 9.5826 * AU, 0.0565, 2.485, 113.66, 339.39, 145.0);
     h.push_back(body("Saturn", "Sun", BodyCategory::Planet,
                      mSat, 5.8232e7, satS, 0.95f, 0.85f, 0.55f, 12.0f));
-    h.push_back(body("Titan", "Saturn", BodyCategory::Moon, 1.3452e23, 2.5747e6,
-                     offsetState(satS, keplerState(muSat, 1.22187e9, 0.0288, 0.35, 0.0, 0.0, 60.0)),
+    h.push_back(body("Titan", "Saturn", BodyCategory::Moon, mTit, 2.5747e6,
+                     offsetState(satS, keplerState(((mSat + mTit) / M_P) * K_OMEGA, 1.22187e9, 0.0288, 0.35, 0.0, 0.0, 60.0)),
                      0.85f, 0.62f, 0.22f, 4.2f));
 
     // 15. Uranus
@@ -185,12 +192,12 @@ std::vector<HeavyBodyDesc> buildHeavyBodies() {
 
     // 16-17. Neptune + Retrograde Triton (inc = 156.885 deg)
     const double mNep = 1.02413e26;
-    const double muNep = (mNep / M_P) * K_OMEGA;
+    const double mTri = 2.1390e22;
     const auto nepS = keplerState(muSun, 30.110 * AU, 0.0086, 1.770, 131.78, 276.34, 315.0);
     h.push_back(body("Neptune", "Sun", BodyCategory::Planet,
                      mNep, 2.4622e7, nepS, 0.25f, 0.42f, 0.96f, 10.0f));
-    h.push_back(body("Triton", "Neptune", BodyCategory::Moon, 2.1390e22, 1.3534e6,
-                     offsetState(nepS, keplerState(muNep, 3.5476e8, 0.00002, 156.885, 0.0, 0.0, 120.0)),
+    h.push_back(body("Triton", "Neptune", BodyCategory::Moon, mTri, 1.3534e6,
+                     offsetState(nepS, keplerState(((mNep + mTri) / M_P) * K_OMEGA, 3.5476e8, 0.00002, 156.885, 0.0, 0.0, 120.0)),
                      0.72f, 0.74f, 0.84f, 3.5f));
 
     // 18. Ceres (Main Belt Dwarf Planet)
