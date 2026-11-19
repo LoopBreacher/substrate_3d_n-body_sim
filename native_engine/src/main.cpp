@@ -45,6 +45,16 @@ glm::vec3 logCompressPos(glm::vec3 p) {
     return (p / r) * (std::log(1.0f + r * 10.0f) * 0.43429448190325182f);
 }
 
+// Builds an orthonormal basis whose column 2 (+Z) is aligned with unit spin axis sHat.
+glm::mat3 buildSpinBasis(const glm::vec3& sHatIn) {
+    const float len = glm::length(sHatIn);
+    const glm::vec3 zAxis = (len > 1e-6f) ? (sHatIn / len) : glm::vec3(0.0f, 0.0f, 1.0f);
+    const glm::vec3 ref = (std::abs(zAxis.z) < 0.92f) ? glm::vec3(0.0f, 0.0f, 1.0f) : glm::vec3(1.0f, 0.0f, 0.0f);
+    const glm::vec3 xAxis = glm::normalize(glm::cross(ref, zAxis));
+    const glm::vec3 yAxis = glm::cross(zAxis, xAxis);
+    return glm::mat3(xAxis, yAxis, zAxis);
+}
+
 struct OrbitCamera {
     float distanceAU = 35.0f;
     float azimuthDeg = 45.0f;
@@ -143,15 +153,20 @@ int runBenchmarkSuite() {
         const double E0 = engine.newtonianEnergy(s0);
         const double L0 = engine.angularMomentumMag(s0);
 
-        // Earth = 3, Mercury = 1, Sun = 0
-        const auto earthKep0 = computeKeplerElements(3, 0, s0, engine);
-        const auto earthDom0 = computeDomainRadii(3, 0, heavy, earthKep0, engine);
-        const auto earthAud  = computeSubstrateAudit(3, 0, s0, earthKep0, engine, true);
-        const auto mercKep0  = computeKeplerElements(1, 0, s0, engine);
-        const auto mercAud   = computeSubstrateAudit(1, 0, s0, mercKep0, engine, true);
+        // Earth = 3, Mercury = 1, Sun = 0, Jupiter = 8, Saturn = 13
+        const auto earthKep0  = computeKeplerElements(3, 0, s0, engine);
+        const auto earthDom0  = computeDomainRadii(3, 0, heavy, earthKep0, engine);
+        const auto earthAud   = computeSubstrateAudit(3, 0, s0, earthKep0, engine, true);
+        const auto mercKep0   = computeKeplerElements(1, 0, s0, engine);
+        const auto mercAud    = computeSubstrateAudit(1, 0, s0, mercKep0, engine, true);
+        const auto jupKep0    = computeKeplerElements(8, 0, s0, engine);
+        const auto jupAud     = computeSubstrateAudit(8, 0, s0, jupKep0, engine, true);
+        const auto satKep0    = computeKeplerElements(13, 0, s0, engine);
+        const auto satAud     = computeSubstrateAudit(13, 0, s0, satKep0, engine, true);
         // Phobos = 6, Mars = 5
-        const auto phobosKep = computeKeplerElements(6, 5, s0, engine);
-        const auto phobosDom = computeDomainRadii(6, 5, heavy, phobosKep, engine);
+        const auto phobosKep  = computeKeplerElements(6, 5, s0, engine);
+        const auto phobosDom  = computeDomainRadii(6, 5, heavy, phobosKep, engine);
+        const auto phobosAud  = computeSubstrateAudit(6, 5, s0, phobosKep, engine, true);
 
         const double rGravAU     = engine.gravitationalFloorAU();
         const double rOortCoreAU = engine.outerOortStagnationAU();
@@ -184,12 +199,20 @@ int runBenchmarkSuite() {
                     earthDom0.vector3R_m / 1000.0, earthDom0.vector4R_m / 1000.0);
         std::printf("  Earth 6.784R Trapping Limit       : %.1f km      (McIlwain L = 6.784 ring-current limit)\n",
                     earthDom0.rDeltaStagnation_m / 1000.0);
-        std::printf("  Earth Surface Clock Lag           : %.4f ppb (-%.2f us/day)\n",
-                    earthAud.clockLagSurface_ppb, earthAud.clockLagSurface_usDay);
+        std::printf("  Earth Surface Clock Lag           : %.4f ppb (-%.2f us/day; +%.4f ppb eq. spin)\n",
+                    earthAud.clockLagSurface_ppb, earthAud.clockLagSurface_usDay,
+                    earthAud.clockLagEquatorExtra_ppb);
+        std::printf("  Earth River-Metric q_rot / J2     : q = %.5f | J2 = %.4e (1/f = %.1f; Obs: 298.3)\n",
+                    earthAud.riverCentrifugalQ, earthAud.derivedJ2,
+                    (earthAud.polarFlatteningF > 0.0) ? (1.0 / earthAud.polarFlatteningF) : 0.0);
+        std::printf("  Jupiter / Saturn Derived J2       : J2_Jup = %.4e (Obs: 1.470e-2) | J2_Sat = %.4e (Obs: 1.629e-2)\n",
+                    jupAud.derivedJ2, satAud.derivedJ2);
+        std::printf("  Mercury 3:2 Spin-Orbit Period     : %.3f days     (Emergent 2/3*T_orb; Obs: 58.646 d)\n",
+                    mercAud.spinPeriodHours / 24.0);
         std::printf("  Mercury 1PN Precession            : %.2f arcsec/cy (Observed GR: 42.98 arcsec/cy)\n",
                     mercAud.precessionArcsecCentury);
-        std::printf("  Phobos r / Fluid Roche            : %.0f km / %.0f km (r/d_R = %.3f)\n",
-                    phobosKep.a_m / 1000.0, phobosDom.rocheFluid_m / 1000.0,
+        std::printf("  Phobos 1:1 Tidal Lock & J2 Prec.  : T_rot = %.3f h | d_omega/dt = +%.1f deg/yr (r/d_R = %.3f)\n",
+                    phobosAud.spinPeriodHours, phobosAud.j2ApsidalPrecessionDegYr,
                     phobosKep.a_m / phobosDom.rocheFluid_m);
         std::printf("  Solar Wind Termination Shock      : %.2f AU       (Voyager 2: 83.7 AU / Voyager 1: 94.0 AU)\n",
                     rTS_AU);
@@ -672,33 +695,77 @@ int main(int argc, char** argv) {
             const DomainRadii dom = computeDomainRadii(targetIdx, pIdx, heavyDescs, kep, engine);
             const glm::vec3 center = heavyRelAU[targetIdx];
 
+            // Compute live 3D spin pole s_hat and rotation phase phi(t):
+            //   - tidalLockMode == 1 (Moons): spin pole is the live orbital angular momentum normal h_hat,
+            //     and prime-meridian spoke points directly toward the parent planet (-r_rel)!
+            //   - tidalLockMode == 2 (Mercury 3:2 resonance): omega_rot = 1.5 * n_orb
+            //   - tidalLockMode == 0 (Free Rotators): uses seeded spinAxis & spinOmega
+            glm::vec3 sHat(static_cast<float>(engine.spinAxisX()[targetIdx]),
+                           static_cast<float>(engine.spinAxisY()[targetIdx]),
+                           static_cast<float>(engine.spinAxisZ()[targetIdx]));
+            const int lockMode = engine.tidalLockMode()[targetIdx];
+            glm::mat3 targetSpinBasis = buildSpinBasis(sHat);
+            float spinPhaseRad = static_cast<float>(std::fmod(engine.spinOmega()[targetIdx] * snap.simTimeSeconds,
+                                                              2.0 * PI_CONST));
+
+            if (lockMode == 1 && pIdx >= 0) {
+                const glm::dvec3 rRel(snap.pos[3 * targetIdx + 0] - snap.pos[3 * pIdx + 0],
+                                      snap.pos[3 * targetIdx + 1] - snap.pos[3 * pIdx + 1],
+                                      snap.pos[3 * targetIdx + 2] - snap.pos[3 * pIdx + 2]);
+                const glm::dvec3 vRel(snap.vel[3 * targetIdx + 0] - snap.vel[3 * pIdx + 0],
+                                      snap.vel[3 * targetIdx + 1] - snap.vel[3 * pIdx + 1],
+                                      snap.vel[3 * targetIdx + 2] - snap.vel[3 * pIdx + 2]);
+                const glm::dvec3 hVec = glm::cross(rRel, vRel);
+                const double hLen = glm::length(hVec);
+                if (hLen > 1e-6) {
+                    sHat = glm::vec3(hVec / hLen);
+                    targetSpinBasis = buildSpinBasis(sHat);
+                    const glm::vec3 toParent = glm::normalize(glm::vec3(-rRel));
+                    const float localX = glm::dot(toParent, targetSpinBasis[0]);
+                    const float localY = glm::dot(toParent, targetSpinBasis[1]);
+                    spinPhaseRad = std::atan2(localY, localX);
+                }
+            } else if (lockMode == 2 && pIdx >= 0 && kep.bound && kep.period_days > 0.0) {
+                const double omegaRes = 1.5 * (2.0 * PI_CONST / (kep.period_days * 86400.0));
+                spinPhaseRad = static_cast<float>(std::fmod(omegaRes * snap.simTimeSeconds, 2.0 * PI_CONST));
+            }
+
             if (renderSettings.showVectorChannels) {
-                // 1R Bare-Metal Core Ring
+                // 1R Bare-Metal Core Ring + Tilted Spin Pole & Rotating Prime-Meridian Spoke
                 drawCtx.shells.push_back({center, static_cast<float>(dom.core1R_m / AU),
-                                          glm::vec4(0.95f, 0.98f, 1.0f, 0.50f), false, true});
-                // 3R Directional Mass/Axial Extension Shell (Plasmapause altitude)
+                                          glm::vec4(0.95f, 0.98f, 1.0f, 0.50f), false, true,
+                                          targetSpinBasis, true, spinPhaseRad});
+                // 3R Directional Mass/Axial Extension Shell (Plasmapause altitude, tilted to spin axis)
                 drawCtx.shells.push_back({center, static_cast<float>(dom.vector3R_m / AU),
-                                          glm::vec4(0.00f, 0.90f, 1.00f, 0.32f), true, true});
-                // 4R Unspooled 4-Channel EM Boundary (Van Allen / Charge analog)
+                                          glm::vec4(0.00f, 0.90f, 1.00f, 0.32f), true, true,
+                                          targetSpinBasis, false, 0.0f});
+                // 4R Unspooled 4-Channel EM Boundary (Van Allen / Charge analog, tilted to spin axis)
                 drawCtx.shells.push_back({center, static_cast<float>(dom.vector4R_m / AU),
-                                          glm::vec4(0.76f, 0.34f, 1.00f, 0.26f), true, true});
+                                          glm::vec4(0.76f, 0.34f, 1.00f, 0.26f), true, true,
+                                          targetSpinBasis, false, 0.0f});
                 // 6.784R Outer Dipolar Ring-Current Trapping Boundary (C_delta^(-1/4) * R_body, gold ring)
                 drawCtx.shells.push_back({center, static_cast<float>(dom.rDeltaStagnation_m / AU),
-                                          glm::vec4(1.00f, 0.82f, 0.25f, 0.45f), false, true});
+                                          glm::vec4(1.00f, 0.82f, 0.25f, 0.45f), false, true,
+                                          targetSpinBasis, false, 0.0f});
             }
 
             if (renderSettings.showHillAndRoche) {
                 if (dom.hillRadius_m > 0.0) {
                     drawCtx.shells.push_back({center, static_cast<float>(dom.hillRadius_m / AU),
-                                              glm::vec4(1.00f, 0.78f, 0.22f, 0.22f), true, true});
+                                              glm::vec4(1.00f, 0.78f, 0.22f, 0.22f), true, true,
+                                              targetSpinBasis, false, 0.0f});
                 }
                 if (dom.rocheFluid_m > 0.0) {
-                    const glm::vec3 rocheCenter =
-                        (heavyDescs[targetIdx].category == BodyCategory::Moon && pIdx >= 0)
-                            ? heavyRelAU[pIdx]
-                            : center;
+                    const bool isMoon = (heavyDescs[targetIdx].category == BodyCategory::Moon && pIdx >= 0);
+                    const glm::vec3 rocheCenter = isMoon ? heavyRelAU[pIdx] : center;
+                    const glm::mat3 rocheBasis = isMoon
+                        ? buildSpinBasis(glm::vec3(static_cast<float>(engine.spinAxisX()[pIdx]),
+                                                   static_cast<float>(engine.spinAxisY()[pIdx]),
+                                                   static_cast<float>(engine.spinAxisZ()[pIdx])))
+                        : targetSpinBasis;
                     drawCtx.shells.push_back({rocheCenter, static_cast<float>(dom.rocheFluid_m / AU),
-                                              glm::vec4(1.00f, 0.28f, 0.32f, 0.55f), false, true});
+                                              glm::vec4(1.00f, 0.28f, 0.32f, 0.55f), false, true,
+                                              rocheBasis, false, 0.0f});
                 }
             }
         }

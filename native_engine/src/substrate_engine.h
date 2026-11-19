@@ -99,6 +99,14 @@ public:
     const std::vector<double>& nodes() const { return m_nodes; }
     const std::vector<double>& density() const { return m_density; }
     const std::vector<double>& mu() const { return m_mu; }
+    const std::vector<double>& spinOmega() const { return m_spinOmega; }
+    const std::vector<double>& spinAxisX() const { return m_spinAxisX; }
+    const std::vector<double>& spinAxisY() const { return m_spinAxisY; }
+    const std::vector<double>& spinAxisZ() const { return m_spinAxisZ; }
+    const std::vector<double>& j2() const { return m_j2; }
+    const std::vector<double>& momentOfInertiaC() const { return m_momentC; }
+    const std::vector<int>& tidalLockMode() const { return m_tidalLockMode; }
+    const std::vector<double>& obliquityDeg() const { return m_obliquityDeg; }
 
     double gravitationalFloorAU() const;
     double outerOortStagnationAU() const;
@@ -132,6 +140,10 @@ private:
     double* d_heavy = nullptr;
     double* d_mu = nullptr;
     double* d_rc = nullptr;
+    double* d_j2R2 = nullptr;
+    double* d_spinAxis = nullptr;
+    int* d_parentIdx = nullptr;
+    uint64_t* d_moonMask = nullptr;
     double* d_particles = nullptr;
 
     // Device & pinned buffers for zero-readback GPU belt histograms (~1 KB)
@@ -143,6 +155,9 @@ private:
     double m_snapTime = 0.0;
 
     std::vector<double> m_mass, m_radius, m_nodes, m_baseDensity, m_density, m_mu, m_rc;
+    std::vector<double> m_spinOmega, m_spinAxisX, m_spinAxisY, m_spinAxisZ, m_momentC, m_j2, m_j2R2, m_obliquityDeg;
+    std::vector<int> m_tidalLockMode, m_parentIdx;
+    std::vector<uint64_t> m_moonMask;
     std::vector<bool> m_overrideActive;
 };
 

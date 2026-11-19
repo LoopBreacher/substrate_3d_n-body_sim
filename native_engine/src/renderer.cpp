@@ -92,11 +92,12 @@ void main() {
 const char* kLineVS = R"(
 layout(location = 0) in vec3 aPos;
 uniform mat4 uViewProj;
+uniform mat3 uBasis;
 uniform vec3 uOffset;
 uniform float uScale;
 uniform bool uLog;
 void main() {
-    vec3 p = aPos * uScale + uOffset;
+    vec3 p = (uBasis * aPos) * uScale + uOffset;
     if (uLog) p = logCompress(p);
     gl_Position = uViewProj * vec4(p, 1.0);
 }
@@ -267,6 +268,15 @@ void Renderer::init() {
     }
     makeLineVao(ring, m_ringVao, m_ringVbo, m_ringVerts);
 
+    // 2-segment Spin Axis + Prime Meridian VAO:
+    //   Segment 0 (verts 0..1): North-South spin pole vector (0, 0, -1.55) -> (0, 0, +1.55)
+    //   Segment 1 (verts 2..3): Rotating equatorial prime-meridian spoke (0, 0, 0) -> (1.15, 0, 0)
+    const std::vector<float> spinSegs = {
+        0.0f, 0.0f, -1.55f,   0.0f,  0.0f, +1.55f,
+        0.0f, 0.0f,  0.00f,   1.15f, 0.0f,  0.00f
+    };
+    makeLineVao(spinSegs, m_spinAxisVao, m_spinAxisVbo, m_spinAxisVerts);
+
     // Dynamic orbit trail VAO/VBO
     glCreateBuffers(1, &m_trailVbo);
     glCreateVertexArrays(1, &m_trailVao);
@@ -312,6 +322,8 @@ void Renderer::shutdown() {
     glDeleteBuffers(1, &m_helioVbo);
     glDeleteVertexArrays(1, &m_ringVao);
     glDeleteBuffers(1, &m_ringVbo);
+    glDeleteVertexArrays(1, &m_spinAxisVao);
+    glDeleteBuffers(1, &m_spinAxisVbo);
     glDeleteVertexArrays(1, &m_trailVao);
     glDeleteBuffers(1, &m_trailVbo);
     glDeleteProgram(m_spriteProg);
@@ -376,11 +388,14 @@ void Renderer::draw(const DrawContext& ctx, const RenderSettings& s) {
     glUseProgram(m_lineProg);
     glUniformMatrix4fv(glGetUniformLocation(m_lineProg, "uViewProj"), 1, GL_FALSE, vp);
     glUniform1i(glGetUniformLocation(m_lineProg, "uLog"), s.logScale);
+    const GLint uBasis = glGetUniformLocation(m_lineProg, "uBasis");
     const GLint uOffset = glGetUniformLocation(m_lineProg, "uOffset");
     const GLint uColor = glGetUniformLocation(m_lineProg, "uColor");
     const GLint uScale = glGetUniformLocation(m_lineProg, "uScale");
+    const glm::mat3 identityBasis(1.0f);
 
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    glUniformMatrix3fv(uBasis, 1, GL_FALSE, glm::value_ptr(identityBasis));
     glUniform3fv(uOffset, 1, glm::value_ptr(ctx.worldOffsetAU));
     if (s.showGrid) {
         glUniform1f(uScale, 1.0f);
@@ -398,6 +413,7 @@ void Renderer::draw(const DrawContext& ctx, const RenderSettings& s) {
 
     for (const auto& sh : ctx.shells) {
         if (sh.radiusAU <= 0.0f) continue;
+        glUniformMatrix3fv(uBasis, 1, GL_FALSE, glm::value_ptr(sh.basis));
         glUniform3fv(uOffset, 1, glm::value_ptr(sh.centerRelAU));
         glUniform1f(uScale, sh.radiusAU);
         if (sh.sphereWireframe) {
@@ -411,6 +427,24 @@ void Renderer::draw(const DrawContext& ctx, const RenderSettings& s) {
             glUniform4fv(uColor, 1, glm::value_ptr(rc));
             glBindVertexArray(m_ringVao);
             glDrawArrays(GL_LINES, 0, m_ringVerts);
+        }
+        if (sh.drawSpinAxis && m_spinAxisVao) {
+            // Segment 0: North-South Spin Pole Axis
+            glUniform4f(uColor, 1.00f, 0.88f, 0.32f, 0.90f);
+            glBindVertexArray(m_spinAxisVao);
+            glDrawArrays(GL_LINES, 0, 2);
+
+            // Segment 1: Rotating Prime-Meridian Spoke around local +Z
+            const float cP = std::cos(sh.spinPhaseRad);
+            const float sP = std::sin(sh.spinPhaseRad);
+            glm::mat3 rotZ(1.0f);
+            rotZ[0] = glm::vec3(cP, sP, 0.0f);
+            rotZ[1] = glm::vec3(-sP, cP, 0.0f);
+            rotZ[2] = glm::vec3(0.0f, 0.0f, 1.0f);
+            const glm::mat3 meridianBasis = sh.basis * rotZ;
+            glUniformMatrix3fv(uBasis, 1, GL_FALSE, glm::value_ptr(meridianBasis));
+            glUniform4f(uColor, 0.15f, 1.00f, 0.78f, 0.95f);
+            glDrawArrays(GL_LINES, 2, 2);
         }
     }
 

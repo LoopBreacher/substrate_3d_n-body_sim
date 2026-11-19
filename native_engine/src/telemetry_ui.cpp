@@ -508,20 +508,38 @@ void drawTelemetryWindow(TelemetryUIState& ui,
             ImGui::Text("Surface Bandwidth Omega(R)    : %.4e  (Limit <= 1.0)", audit.omegaSurface);
             ImGui::Text("Surface Clock Lag (1 - u_O)   : %.4f ppb  (-%.3f us/day vs. void)",
                         audit.clockLagSurface_ppb, audit.clockLagSurface_usDay);
+            ImGui::Text("Equatorial Spin Clock Lag     : +%.4e ppb  (-%.4f us/day vs. poles)",
+                        audit.clockLagEquatorExtra_ppb, audit.clockLagEquatorExtra_usDay);
             if (pIdx >= 0) {
                 ImGui::Text("Orbital Clock Lag (g_O + v_O) : %.4f ppb  (-%.3f us/day vs. void)",
                             audit.clockLagOrbit_ppb, audit.clockLagOrbit_usDay);
                 ImGui::TextColored(ImVec4(0.95f, 0.82f, 0.35f, 1.0f),
                                    "1PN Periapsis Precession      : %.3f arcsec / Julian century",
                                    audit.precessionArcsecCentury);
+                if (std::abs(audit.j2ApsidalPrecessionDegYr) > 1e-6) {
+                    ImGui::TextColored(ImVec4(0.35f, 0.96f, 0.72f, 1.0f),
+                                       "Parent J2 Apsidal / Nodal     : %+.3f deg/yr  |  %+.3f deg/yr",
+                                       audit.j2ApsidalPrecessionDegYr, audit.j2NodalRegressionDegYr);
+                }
             }
 
             ImGui::Spacing();
             ImGui::TextColored(ImVec4(0.0f, 0.88f, 1.0f, 1.0f),
-                               "C. Macro-Scale Quantization & Magnetospheric Geometry");
+                               "C. Macro-Scale Quantization, Axial Spin & Darwin-Radau J2");
             ImGui::Text("Collective Compton Floor      : %.4e m", audit.lambdaComptonBody_m);
             ImGui::Text("Top-Down Quantum Radius       : %.2f km  (Physical: %.2f km)",
                         audit.quantumTopDownRadius_m / 1000.0, audit.radiusM / 1000.0);
+            const char* spinModeTag = (audit.tidalLockMode == 1)
+                ? "[1:1 Tidal Lock — Emergent]"
+                : ((audit.tidalLockMode == 2) ? "[3:2 Spin-Orbit Resonance — Emergent]" : "[Free Rotator]");
+            ImGui::Text("Sidereal Spin Period / Tilt   : %.3f h (%.3f d) | Obliq: %.2f deg %s",
+                        audit.spinPeriodHours, audit.spinPeriodHours / 24.0,
+                        audit.obliquity_deg, spinModeTag);
+            ImGui::Text("Equatorial Speed & River q_rot: v_eq = %.2f m/s | q_rot = 2(v_eq/v_in)^2 = %.5e",
+                        audit.vEquatorial_ms, audit.riverCentrifugalQ);
+            const double invFlat = (audit.polarFlatteningF > 1e-12) ? (1.0 / audit.polarFlatteningF) : 0.0;
+            ImGui::Text("Derived Darwin-Radau J2 & 1/f : J2 = %.4e  |  Flattening 1/f = %.1f  |  |S| = %.3e kg*m^2/s",
+                        audit.derivedJ2, invFlat, audit.spinAngMom_kgm2s);
             ImGui::TextColored(ImVec4(0.0f, 0.90f, 1.0f, 1.0f),
                                "3R Directional Mass/Axial     : %.1f km  (Plasmapause altitude)",
                                dom.vector3R_m / 1000.0);
@@ -692,6 +710,11 @@ void drawTelemetryWindow(TelemetryUIState& ui,
                 ImGui::Text("True Anomaly (nu)        : %.2f deg", kep.trueAnom_deg);
                 ImGui::Text("Orbital Period (T)       : %.2f days  (%.4f Julian years)",
                             kep.period_days, kep.period_days / 365.25);
+                if (std::abs(audit.j2ApsidalPrecessionDegYr) > 1e-6) {
+                    ImGui::TextColored(ImVec4(0.35f, 0.96f, 0.72f, 1.0f),
+                                       "Parent J2 Precession     : d_omega/dt = %+.2f deg/yr | d_Omega/dt = %+.2f deg/yr",
+                                       audit.j2ApsidalPrecessionDegYr, audit.j2NodalRegressionDegYr);
+                }
             }
 
             ImGui::Spacing();

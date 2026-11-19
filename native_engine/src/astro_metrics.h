@@ -69,6 +69,20 @@ struct SubstrateBodyAudit {
     double clockLagOrbit_ppb = 0.0;
     double clockLagOrbit_usDay = 0.0;
     double precessionArcsecCentury = 0.0; // 1PN periapsis precession rate (arcsec / Julian century)
+
+    // Axial Rotation, River-Metric Flattening & J2 Quadrupole Telemetry
+    int tidalLockMode = 0;               // 0 = Free Rotator, 1 = 1:1 Tidal Lock, 2 = 3:2 Spin-Orbit Resonance
+    double spinPeriodHours = 0.0;        // Live sidereal spin period (emergent from orbit for moons & Mercury!)
+    double vEquatorial_ms = 0.0;         // Equatorial rotation speed v_eq = |omega_rot| * R (m/s)
+    double obliquity_deg = 0.0;          // Spin axis tilt (deg)
+    double riverCentrifugalQ = 0.0;      // q_rot = 2 * (v_eq / v_inflow)^2
+    double derivedJ2 = 0.0;              // Darwin-Radau hydrostatic quadrupole J2
+    double polarFlatteningF = 0.0;       // Polar flattening f = (R_eq - R_pol) / R_eq
+    double spinAngMom_kgm2s = 0.0;       // Spin angular momentum |S| = C * M * R^2 * |omega_rot|
+    double clockLagEquatorExtra_ppb = 0.0;   // Extra equatorial kinematic throttling v_eq^2 / (2 c^2) (ppb)
+    double clockLagEquatorExtra_usDay = 0.0; // Extra equatorial clock lag (us/day vs. poles)
+    double j2ApsidalPrecessionDegYr = 0.0;   // Parent J2 apsidal precession rate (deg/Julian year)
+    double j2NodalRegressionDegYr = 0.0;     // Parent J2 nodal regression rate (deg/Julian year)
 };
 
 struct CoarseGrainAudit {

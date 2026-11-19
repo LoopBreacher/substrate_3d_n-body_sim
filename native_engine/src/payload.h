@@ -25,6 +25,16 @@ struct HeavyBodyDesc {
     double vel[3] = {};     // m/s
     float color[4] = {1, 1, 1, 1};
     float size = 4.0f;      // on-screen diameter in pixels
+
+    // Axial rotation & internal structure parameters:
+    //   tidalLockMode: 0 = free rotator (uses spinPeriodHours), 1 = 1:1 synchronous tidal lock to parent,
+    //                  2 = 3:2 spin-orbit resonance (Mercury: omega_rot = 1.5 * n_orb)
+    int tidalLockMode = 0;
+    double spinPeriodHours = 24.0;   // Sidereal rotation period in hours (negative = retrograde; computed from orbit if tidalLockMode != 0)
+    double obliquityDeg = 0.0;       // Axial tilt relative to ecliptic north (+Z) in degrees
+    double poleRaanDeg = 0.0;        // Ascending node of equatorial plane on ecliptic in degrees
+    double momentOfInertiaC = 0.33;  // Dimensionless polar moment of inertia C / (M * R^2)
+    double spinAxis[3] = {0.0, 0.0, 1.0}; // Unit spin pole vector s_hat in ecliptic Cartesian coordinates
 };
 
 // Massless test particles (asteroids, KBOs), stored structure-of-arrays.

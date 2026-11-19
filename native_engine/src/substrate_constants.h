@@ -113,6 +113,22 @@ constexpr double gravitationalFloorMetersFromNodes(double compiledNodes) {
     return constSqrt(constSqrt(quarticArg));
 }
 
+// Derives rotational River-metric ratio q_rot = 2*(v_eq / v_inflow)^2 and Darwin-Radau hydrostatic J2:
+//   sqrt(1 + eta_DR) = (5/2) * (1 - (3/2)*C/(M*R^2))  =>  eta_DR = 6.25 * (1 - 1.5*C)^2 - 1
+//   k_2 = (3 - eta_DR) / (2 + eta_DR),  J_2 = (k_2 / 3) * q_rot
+constexpr double deriveHydrostaticJ2(double omegaRotRadSec, double radiusM, double muSelf, double momentOfInertiaC) {
+    if (radiusM <= 0.0 || muSelf <= 0.0) return 0.0;
+    const double gSurf = muSelf / (radiusM * radiusM);
+    const double vInflow2 = 2.0 * gSurf * radiusM; // v_inflow^2 = 2 * muSelf / R
+    const double vEq = omegaRotRadSec * radiusM;
+    const double qRot = (2.0 * vEq * vEq) / vInflow2;
+    const double dC = 1.0 - 1.5 * momentOfInertiaC;
+    const double etaRaw = 6.25 * dC * dC - 1.0;
+    const double etaDR = (etaRaw > 0.0) ? etaRaw : 0.0;
+    const double k2 = (3.0 - etaDR) / (2.0 + etaDR);
+    return (k2 / 3.0) * qRot;
+}
+
 // Heavy bodies are integrated by a single fused CUDA block, one thread per body.
 constexpr int MAX_HEAVY = 128;
 

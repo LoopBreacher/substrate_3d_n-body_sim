@@ -40,13 +40,10 @@ KeplerElements computeKeplerElements(int bodyIdx, int parentIdx,
     k.r_m = r;
     k.v_ms = std::sqrt(v2);
 
-    const double mu = engine.mu()[parentIdx] + engine.mu()[bodyIdx];
-    if (r < 1.0 || mu <= 0.0) {
+    const double muPair = engine.mu()[parentIdx] + engine.mu()[bodyIdx];
+    if (r < 1.0 || muPair <= 0.0) {
         return k;
     }
-
-    k.valid = true;
-    k.specificEnergy = 0.5 * v2 - mu / r;
 
     // Specific angular momentum h = r x v
     const double hx = ry * vz - rz * vy;
@@ -54,6 +51,23 @@ KeplerElements computeKeplerElements(int bodyIdx, int parentIdx,
     const double hz = rx * vy - ry * vx;
     const double h = std::sqrt(hx * hx + hy * hy + hz * hz);
     if (h < 1e-12) return k;
+
+    // Include parent body's J2 oblate quadrupole enhancement in effective central gravity mu:
+    double mu = muPair;
+    const double j2Parent = engine.j2()[parentIdx];
+    const double rParent  = engine.radius()[parentIdx];
+    if (j2Parent > 0.0 && rParent > 0.0 && engine.mu()[parentIdx] > 0.0) {
+        const double sx = engine.spinAxisX()[parentIdx];
+        const double sy = engine.spinAxisY()[parentIdx];
+        const double sz = engine.spinAxisZ()[parentIdx];
+        const double cosIncEq = std::clamp((hx * sx + hy * sy + hz * sz) / h, -1.0, 1.0);
+        const double sin2IncEq = 1.0 - cosIncEq * cosIncEq;
+        const double ratio = rParent / r;
+        mu = muPair * (1.0 + 1.5 * j2Parent * ratio * ratio * (1.0 - 1.5 * sin2IncEq));
+    }
+
+    k.valid = true;
+    k.specificEnergy = 0.5 * v2 - mu / r;
 
     // Eccentricity vector e_vec = (v x h)/mu - r/r
     const double vxh_x = vy * hz - vz * hy;
@@ -209,7 +223,39 @@ SubstrateBodyAudit computeSubstrateAudit(int bodyIdx, int parentIdx,
     a.clockLagSurface_ppb = lagSurfFrac * 1.0e9;
     a.clockLagSurface_usDay = lagSurfFrac * 86400.0 * 1.0e6;
 
-    // Orbital River Metric, Bandwidth Load, & 1PN Perihelion Precession
+    // Axial Rotation, Emergent Tidal Locking (1:1 Moons & 3:2 Mercury), River-Metric Flattening & Darwin-Radau J2
+    a.tidalLockMode = engine.tidalLockMode()[bodyIdx];
+    a.obliquity_deg = engine.obliquityDeg()[bodyIdx];
+    double omegaRot = engine.spinOmega()[bodyIdx];
+    const double signRot = (omegaRot < 0.0) ? -1.0 : 1.0;
+    if (a.tidalLockMode == 1 && kep.bound && kep.period_days > 0.0) {
+        // 1:1 Synchronous Tidal Lock: spin period emerges dynamically from live orbital period!
+        a.spinPeriodHours = signRot * kep.period_days * 24.0;
+        omegaRot = signRot * (TWO_PI / (kep.period_days * 86400.0));
+    } else if (a.tidalLockMode == 2 && kep.bound && kep.period_days > 0.0) {
+        // 3:2 Spin-Orbit Resonance (Mercury): omega_rot = 1.5 * n_orb
+        a.spinPeriodHours = signRot * (2.0 / 3.0) * kep.period_days * 24.0;
+        omegaRot = signRot * 1.5 * (TWO_PI / (kep.period_days * 86400.0));
+    } else {
+        a.spinPeriodHours = (std::abs(omegaRot) > 1e-18) ? (TWO_PI / (omegaRot * 3600.0)) : 0.0;
+    }
+
+    const double absOmegaRot = std::abs(omegaRot);
+    a.vEquatorial_ms = absOmegaRot * a.radiusM;
+    a.riverCentrifugalQ = (a.vInflowSurface_ms > 0.0)
+        ? (2.0 * (a.vEquatorial_ms / a.vInflowSurface_ms) * (a.vEquatorial_ms / a.vInflowSurface_ms))
+        : 0.0;
+    const double momC = engine.momentOfInertiaC()[bodyIdx];
+    a.derivedJ2 = deriveHydrostaticJ2(absOmegaRot, a.radiusM, muSelf, momC);
+    a.polarFlatteningF = 1.5 * a.derivedJ2 + 0.5 * a.riverCentrifugalQ;
+    a.spinAngMom_kgm2s = momC * engine.mass()[bodyIdx] * a.radiusM * a.radiusM * absOmegaRot;
+
+    const double eqKinLoad = (a.vEquatorial_ms * a.vEquatorial_ms) / c2;
+    const double eqLagFrac = oneMinusSqrtOneMinus(eqKinLoad);
+    a.clockLagEquatorExtra_ppb = eqLagFrac * 1.0e9;
+    a.clockLagEquatorExtra_usDay = eqLagFrac * 86400.0 * 1.0e6;
+
+    // Orbital River Metric, Bandwidth Load, 1PN Precession & Parent J2 Quadrupole Precession
     if (parentIdx >= 0 && kep.r_m > 1.0) {
         const double muParent = engine.mu()[parentIdx];
         a.gParentAtOrbit_ms2 = muParent / (kep.r_m * kep.r_m);
@@ -224,10 +270,36 @@ SubstrateBodyAudit computeSubstrateAudit(int bodyIdx, int parentIdx,
         a.clockLagOrbit_ppb = lagOrbFrac * 1.0e9;
         a.clockLagOrbit_usDay = lagOrbFrac * 86400.0 * 1.0e6;
 
-        if (relativisticEnabled && kep.bound && kep.period_days > 0.0 && muParent > 0.0) {
-            const double radPerOrbit = (6.0 * PI * muParent) / (c2 * kep.a_m * (1.0 - kep.e * kep.e));
-            const double orbitsPerCentury = 36525.0 / kep.period_days;
-            a.precessionArcsecCentury = radPerOrbit * ARCSEC_PER_RAD * orbitsPerCentury;
+        if (kep.bound && kep.period_days > 0.0 && muParent > 0.0) {
+            const double pSemi = kep.a_m * (1.0 - kep.e * kep.e);
+            if (relativisticEnabled && pSemi > 1.0) {
+                const double radPerOrbit = (6.0 * PI * muParent) / (c2 * pSemi);
+                const double orbitsPerCentury = 36525.0 / kep.period_days;
+                a.precessionArcsecCentury = radPerOrbit * ARCSEC_PER_RAD * orbitsPerCentury;
+            }
+            const double j2Parent = engine.j2()[parentIdx];
+            const double rParent  = engine.radius()[parentIdx];
+            if (j2Parent > 0.0 && rParent > 0.0 && pSemi > 1.0) {
+                const double rx = snap.pos[3 * bodyIdx + 0] - snap.pos[3 * parentIdx + 0];
+                const double ry = snap.pos[3 * bodyIdx + 1] - snap.pos[3 * parentIdx + 1];
+                const double rz = snap.pos[3 * bodyIdx + 2] - snap.pos[3 * parentIdx + 2];
+                const double vx = snap.vel[3 * bodyIdx + 0] - snap.vel[3 * parentIdx + 0];
+                const double vy = snap.vel[3 * bodyIdx + 1] - snap.vel[3 * parentIdx + 1];
+                const double vz = snap.vel[3 * bodyIdx + 2] - snap.vel[3 * parentIdx + 2];
+                const double hx = ry * vz - rz * vy;
+                const double hy = rz * vx - rx * vz;
+                const double hz = rx * vy - ry * vx;
+                const double hMag = std::max(std::sqrt(hx * hx + hy * hy + hz * hz), 1e-12);
+                const double sx = engine.spinAxisX()[parentIdx];
+                const double sy = engine.spinAxisY()[parentIdx];
+                const double sz = engine.spinAxisZ()[parentIdx];
+                const double cosIncEq = std::clamp((hx * sx + hy * sy + hz * sz) / hMag, -1.0, 1.0);
+                const double ratio = rParent / pSemi;
+                const double orbitsPerYr = 365.25 / kep.period_days;
+                const double baseDegYr = 1.5 * 360.0 * orbitsPerYr * j2Parent * ratio * ratio;
+                a.j2NodalRegressionDegYr   = -baseDegYr * cosIncEq;
+                a.j2ApsidalPrecessionDegYr = 0.5 * baseDegYr * (5.0 * cosIncEq * cosIncEq - 1.0);
+            }
         }
     } else {
         // Root body (Sun): kinematic drift relative to barycenter

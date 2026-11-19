@@ -32,6 +32,9 @@ struct OverlayShell {
     glm::vec4 color{1.0f};
     bool sphereWireframe = true;
     bool equatorialRing = true;
+    glm::mat3 basis{1.0f};      // Orthonormal basis with column 2 aligned to body's 3D spin axis s_hat
+    bool drawSpinAxis = false;  // Draws North-South spin pole vector + rotating prime-meridian spoke
+    float spinPhaseRad = 0.0f;  // Instantaneous rotation angle phi(t) = omega_rot * t (or sub-parent longitude)
 };
 
 struct TrailVertex {
@@ -96,6 +99,8 @@ private:
     GLsizei m_helioVerts = 0;
     GLuint m_ringVao = 0, m_ringVbo = 0;
     GLsizei m_ringVerts = 0;
+    GLuint m_spinAxisVao = 0, m_spinAxisVbo = 0;
+    GLsizei m_spinAxisVerts = 0;
 
     GLuint m_trailVao = 0, m_trailVbo = 0;
     GLsizei m_trailVerts = 0;
