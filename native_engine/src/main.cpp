@@ -94,7 +94,7 @@ void scrollCallback(GLFWwindow* win, double /*xoff*/, double yoff) {
     auto* ms = static_cast<MouseState*>(glfwGetWindowUserPointer(win));
     if (!ms || !ms->cam) return;
     const float factor = std::pow(0.86f, static_cast<float>(yoff));
-    ms->cam->distanceAU = std::clamp(ms->cam->distanceAU * factor, 1.0e-5f, 3500.0f);
+    ms->cam->distanceAU = std::clamp(ms->cam->distanceAU * factor, 1.0e-5f, 25000.0f);
 }
 
 void applySciFiTheme() {
@@ -163,10 +163,12 @@ int runBenchmarkSuite() {
         const auto jupAud     = computeSubstrateAudit(8, 0, s0, jupKep0, engine, true);
         const auto satKep0    = computeKeplerElements(13, 0, s0, engine);
         const auto satAud     = computeSubstrateAudit(13, 0, s0, satKep0, engine, true);
-        // Phobos = 6, Mars = 5
+        // Phobos = 6, Mars = 5; 1I/'Oumuamua = 54; Titan = 14, Saturn = 13
         const auto phobosKep  = computeKeplerElements(6, 5, s0, engine);
         const auto phobosDom  = computeDomainRadii(6, 5, heavy, phobosKep, engine);
         const auto phobosAud  = computeSubstrateAudit(6, 5, s0, phobosKep, engine, true);
+        const auto oumuamuaK  = computeKeplerElements(54, 0, s0, engine);
+        const auto jupLP      = computeLagrangePoints(8, 0, s0, engine);
 
         const double rGravAU     = engine.gravitationalFloorAU();
         const double rOortCoreAU = engine.outerOortStagnationAU();
@@ -174,7 +176,7 @@ int runBenchmarkSuite() {
         const double rHP_AU      = engine.heliopauseRadiusAU();
 
         std::printf("[Substrate Logistics Bare-Metal Hardware Audit]\n");
-        std::printf("  Coupled Heavy Bodies              : %zu (Sun, 8 Planets, 21 Moons, 13 Dwarf/Trojan/Comet)\n",
+        std::printf("  Coupled Heavy Bodies              : %zu (Sun, 8 Planets, 23 Moons, 23 Dwarf/Centaur/NEA/Trojan/Comet/ISO)\n",
                     heavy.size());
         std::printf("  Exact C_delta                     : %.12e  ((sqrt(5) - 2) / 500)\n", C_DELTA);
         std::printf("  Linear Drag sqrt(C_d)             : %.12f  (Void Om_m = %.6f, Global Om_m = %.6f)\n",
@@ -221,8 +223,21 @@ int runBenchmarkSuite() {
         std::printf("  Sun Grav. Floor R_g               : %.2f AU     (u_g(R_g) == Sigma_0)\n", rGravAU);
         std::printf("  Outer Oort Core 6.784 R_g         : %.1f AU    (Inner/Outer Oort core transition)\n",
                     rOortCoreAU);
-        std::printf("  Galactic 2D Disk Truncation Ratio : %.3f R_d       (0.5*ln(1/C_d); Obs: 3.8 +- 0.7 R_d)\n\n",
+        std::printf("  Galactic 2D Disk Truncation Ratio : %.3f R_d       (0.5*ln(1/C_d); Obs: 3.8 +- 0.7 R_d)\n",
                     DISK_TRUNCATION_RATIO);
+        std::printf("  1I/'Oumuamua Hyperbolic State     : r = %.3f AU, e = %.5f (%s), v = %.2f km/s\n",
+                    oumuamuaK.r_m / AU, oumuamuaK.e, oumuamuaK.bound ? "BOUND" : "HYPERBOLIC",
+                    oumuamuaK.v_ms / 1000.0);
+        if (jupLP.valid) {
+            const double dx1 = jupLP.pos_m[0][0] - s0.pos[8 * 3 + 0];
+            const double dy1 = jupLP.pos_m[0][1] - s0.pos[8 * 3 + 1];
+            const double dz1 = jupLP.pos_m[0][2] - s0.pos[8 * 3 + 2];
+            const double dJupL1_AU = std::sqrt(dx1 * dx1 + dy1 * dy1 + dz1 * dz1) / AU;
+            std::printf("  Sun-Jupiter Emergent L1 Distance  : %.5f AU from Jupiter (alpha = %.6e)\n\n",
+                        dJupL1_AU, jupLP.alpha);
+        } else {
+            std::printf("\n");
+        }
 
         StepParams sp;
         sp.dtSeconds = 21600.0;
@@ -243,7 +258,7 @@ int runBenchmarkSuite() {
 
         // Verify GPU BeltStats kernel
         BeltStats bs{};
-        engine.computeBeltStats(bs, 5.2044);
+        engine.computeBeltStats(bs, 5.202887);
 
         std::printf("[Physics Verification - 1 Julian Year (4th-Order PEFRL + Kahan, substeps=20)]\n");
         std::printf("  Earth Semi-Major Axis  : %.6f AU (initial %.6f AU, e = %.5f)\n",
@@ -520,7 +535,7 @@ int main(int argc, char** argv) {
             }
             if (glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS) {
                 const float zoomFactor = std::pow(1.008f, static_cast<float>(dy));
-                camera.distanceAU = std::clamp(camera.distanceAU * zoomFactor, 1.0e-5f, 3500.0f);
+                camera.distanceAU = std::clamp(camera.distanceAU * zoomFactor, 1.0e-5f, 25000.0f);
             }
             if (glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_MIDDLE) == GLFW_PRESS) {
                 const float panScale = camera.distanceAU * 0.0012f;
@@ -571,7 +586,7 @@ int main(int argc, char** argv) {
 
         const float aspect = static_cast<float>(fbW) / static_cast<float>(fbH);
         const float nearPlane = std::clamp(camera.distanceAU * 1.0e-3f, 1.0e-8f, 0.1f);
-        const float farPlane = std::max(5000.0f, camera.distanceAU * 25.0f);
+        const float farPlane = std::max(40000.0f, camera.distanceAU * 25.0f);
         const glm::mat4 proj = glm::perspective(glm::radians(45.0f), aspect, nearPlane, farPlane);
         const glm::mat4 view = camera.viewMatrix();
         const glm::mat4 viewProj = proj * view;
@@ -669,12 +684,15 @@ int main(int argc, char** argv) {
 
         DrawContext drawCtx;
         drawCtx.viewProj = viewProj;
+        drawCtx.view = view;
+        drawCtx.camDistanceAU = camera.distanceAU;
         drawCtx.worldOffsetAU = glm::vec3(-originWorldAU_d);
         drawCtx.starCenterRelAU = (numHeavy > 0) ? heavyRelAU[0] : glm::vec3(-originWorldAU_d);
         drawCtx.viewportPx = glm::vec2(static_cast<float>(fbW), static_cast<float>(fbH));
 
-        // Heliospheric Ram-Pressure Boundaries & Gravitational Deletion Floor R_g
+        // Heliospheric Ram-Pressure Boundaries, Gravitational Floor R_g & Outer Oort Core
         const double rGravSunAU = engine.gravitationalFloorAU();
+        const double rOortCoreAU = engine.outerOortStagnationAU();
         if (renderSettings.showHeliosphereShells && rGravSunAU > 0.0) {
             const glm::vec3 starCenter = drawCtx.starCenterRelAU;
             // Solar Wind Termination Shock Ring (89.44 AU, amber)
@@ -687,6 +705,12 @@ int main(int argc, char** argv) {
             drawCtx.shells.push_back({starCenter, static_cast<float>(rGravSunAU),
                                       glm::vec4(1.00f, 0.86f, 0.34f, 0.22f),
                                       camera.distanceAU > 250.0f, true});
+            // Outer Oort Stagnation Core (6.784 * R_g = 16,490.6 AU)
+            if (rOortCoreAU > 0.0) {
+                drawCtx.shells.push_back({starCenter, static_cast<float>(rOortCoreAU),
+                                          glm::vec4(0.55f, 0.75f, 1.00f, 0.24f),
+                                          camera.distanceAU > 3000.0f, true});
+            }
         }
 
         if (targetIdx >= 0 && targetIdx < numHeavy) {
@@ -784,14 +808,28 @@ int main(int argc, char** argv) {
 
         renderer.draw(drawCtx, renderSettings);
 
-        // 3. Start ImGui Frame & Draw Smart Deconflicted 2D Viewport HUD
+        // 3. Start ImGui Frame & Draw Smart Deconflicted 2D Viewport HUD (+ Emergent L1-L5 Lagrange Points)
         ImGui_ImplOpenGL3_NewFrame();
         ImGui_ImplGlfw_NewFrame();
         ImGui::NewFrame();
 
+        glm::vec3 lpRelAU[5] = {};
+        bool lpValid = false;
+        if (targetIdx >= 0 && targetIdx < numHeavy && parentIdx[targetIdx] >= 0) {
+            const LagrangePoints lp = computeLagrangePoints(targetIdx, parentIdx[targetIdx], snap, engine);
+            if (lp.valid) {
+                lpValid = true;
+                for (int k = 0; k < 5; ++k) {
+                    const glm::dvec3 worldAU(lp.pos_m[k][0] / AU, lp.pos_m[k][1] / AU, lp.pos_m[k][2] / AU);
+                    lpRelAU[k] = glm::vec3(worldAU - originWorldAU_d);
+                }
+            }
+        }
+
         drawSmartViewportHUD(ImGui::GetBackgroundDrawList(), io.DisplaySize, viewProj,
                              heavyRelAU, heavyDescs, parentIdx, engine, renderSettings,
-                             showLabels, camera.distanceAU, camera.azimuthDeg, camera.elevationDeg,
+                             showLabels, lpRelAU, lpValid,
+                             camera.distanceAU, camera.azimuthDeg, camera.elevationDeg,
                              targetIdx, camera.lockTarget, camera.panOffsetAU);
 
         // 4. Separate Toggleable Floating Window: Astrophysics & Substrate Telemetry
@@ -899,6 +937,13 @@ int main(int argc, char** argv) {
                     camera.panOffsetAU = glm::vec3(0.0f);
                     camera.distanceAU = 195.0f;
                 }
+                if (ImGui::Button("Zoom: Outer Oort Core (16,491 AU)", ImVec2(-1.0f, 0.0f))) {
+                    camera.lockTarget = false;
+                    renderSettings.logScale = false;
+                    renderSettings.showHeliosphereShells = true;
+                    camera.panOffsetAU = glm::vec3(0.0f);
+                    camera.distanceAU = 21000.0f;
+                }
             }
 
             if (ImGui::CollapsingHeader("3D Overlays & Viewport Settings", ImGuiTreeNodeFlags_DefaultOpen)) {
@@ -906,6 +951,7 @@ int main(int argc, char** argv) {
                 ImGui::Checkbox("Show 3D Orbit Trails", &renderSettings.showOrbitTrails);
                 ImGui::Checkbox("Show 3R / 4R / 6.784R Magnetospheric Shells", &renderSettings.showVectorChannels);
                 ImGui::Checkbox("Show Hill Sphere & Fluid Roche Limit", &renderSettings.showHillAndRoche);
+                ImGui::Checkbox("Show Lagrange Points (L1-L5) for Target", &renderSettings.showLagrangePoints);
                 ImGui::Checkbox("Show Heliosphere Rings (TS 89.44 AU & R_g Floor)", &renderSettings.showHeliosphereShells);
                 char helioLabel[96];
                 std::snprintf(helioLabel, sizeof(helioLabel),

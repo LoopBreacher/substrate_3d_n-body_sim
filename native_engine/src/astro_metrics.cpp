@@ -354,5 +354,109 @@ CoarseGrainAudit computeCoarseGrainAudit(double probeRadiusAU,
     return cg;
 }
 
+LagrangePoints computeLagrangePoints(int bodyIdx, int parentIdx,
+                                     const HeavySnapshot& snap,
+                                     const SubstrateEngine& engine) {
+    LagrangePoints lp{};
+    if (parentIdx < 0 || bodyIdx < 0 || bodyIdx >= engine.numHeavy() || parentIdx >= engine.numHeavy()) {
+        return lp;
+    }
+
+    const double muParent = engine.mu()[parentIdx];
+    const double muBody   = engine.mu()[bodyIdx];
+    // Require both bodies to be GC-compiled (Theta = 1): if either decompiles to Theta = 0, Lagrange points vanish!
+    if (muParent <= 0.0 || muBody <= 0.0) {
+        return lp;
+    }
+
+    const double px = snap.pos[3 * parentIdx + 0];
+    const double py = snap.pos[3 * parentIdx + 1];
+    const double pz = snap.pos[3 * parentIdx + 2];
+
+    const double rx = snap.pos[3 * bodyIdx + 0] - px;
+    const double ry = snap.pos[3 * bodyIdx + 1] - py;
+    const double rz = snap.pos[3 * bodyIdx + 2] - pz;
+
+    const double vx = snap.vel[3 * bodyIdx + 0] - snap.vel[3 * parentIdx + 0];
+    const double vy = snap.vel[3 * bodyIdx + 1] - snap.vel[3 * parentIdx + 1];
+    const double vz = snap.vel[3 * bodyIdx + 2] - snap.vel[3 * parentIdx + 2];
+
+    const double r = std::sqrt(rx * rx + ry * ry + rz * rz);
+    if (r < 1.0) return lp;
+
+    const double ux = rx / r, uy = ry / r, uz = rz / r;
+
+    // Orbital angular momentum normal h_hat = normalize(r_vec x v_vec)
+    const double hx = ry * vz - rz * vy;
+    const double hy = rz * vx - rx * vz;
+    const double hz = rx * vy - ry * vx;
+    const double hLen = std::sqrt(hx * hx + hy * hy + hz * hz);
+    if (hLen < 1e-12) return lp;
+
+    const double hnx = hx / hLen, hny = hy / hLen, hnz = hz / hLen;
+
+    // Transverse unit vector t_hat = h_hat x u_hat (points +90 deg ahead in the orbital plane)
+    const double tx = hny * uz - hnz * uy;
+    const double ty = hnz * ux - hnx * uz;
+    const double tz = hnx * uy - hny * ux;
+
+    const double alpha = muBody / (muParent + muBody);
+    const double oneMinusAlpha = 1.0 - alpha;
+    lp.alpha = alpha;
+
+    const double rH = std::cbrt(alpha / 3.0);
+    const double eps = std::max(1.0e-14, 1.0e-6 * rH);
+
+    // Exact Euler quintic root finder:
+    //   f(x) = x - (1 - alpha)*(x + alpha)/|x + alpha|^3 - alpha*(x - (1 - alpha))/|x - (1 - alpha)|^3 = 0
+    //   f'(x) = 1 + 2*(1 - alpha)/|x + alpha|^3 + 2*alpha/|x - (1 - alpha)|^3  (> 1 everywhere)
+    auto solveCollinear = [&](double xInit, double xMin, double xMax) -> double {
+        double x = std::clamp(xInit, xMin, xMax);
+        for (int iter = 0; iter < 12; ++iter) {
+            const double d1 = x + alpha;
+            const double d2 = x - oneMinusAlpha;
+            const double a1 = std::abs(d1);
+            const double a2 = std::abs(d2);
+            if (a1 < 1.0e-15 || a2 < 1.0e-15) break;
+            const double a1_3 = a1 * a1 * a1;
+            const double a2_3 = a2 * a2 * a2;
+            const double f  = x - oneMinusAlpha * (d1 / a1_3) - alpha * (d2 / a2_3);
+            const double df = 1.0 + 2.0 * oneMinusAlpha / a1_3 + 2.0 * alpha / a2_3;
+            const double step = f / df;
+            if (!std::isfinite(step)) break;
+            x = std::clamp(x - step, xMin, xMax);
+            if (std::abs(step) < 1.0e-14) break;
+        }
+        return x;
+    };
+
+    const double x1 = solveCollinear(oneMinusAlpha - rH * (1.0 - rH / 3.0), -alpha + eps, oneMinusAlpha - eps);
+    const double x2 = solveCollinear(oneMinusAlpha + rH * (1.0 + rH / 3.0), oneMinusAlpha + eps, 10.0);
+    const double x3 = solveCollinear(-1.0 + (7.0 / 12.0) * alpha, -10.0, -alpha - eps);
+
+    auto setCollinear = [&](int idx, double x) {
+        const double s = x + alpha;
+        lp.pos_m[idx][0] = px + s * rx;
+        lp.pos_m[idx][1] = py + s * ry;
+        lp.pos_m[idx][2] = pz + s * rz;
+    };
+    setCollinear(0, x1); // L1
+    setCollinear(1, x2); // L2
+    setCollinear(2, x3); // L3
+
+    // Exact equilateral triangular points L4 (+60 deg ahead) and L5 (-60 deg behind)
+    constexpr double HALF_SQRT3 = 0.86602540378443864676;
+    lp.pos_m[3][0] = px + 0.5 * rx + HALF_SQRT3 * r * tx;
+    lp.pos_m[3][1] = py + 0.5 * ry + HALF_SQRT3 * r * ty;
+    lp.pos_m[3][2] = pz + 0.5 * rz + HALF_SQRT3 * r * tz;
+
+    lp.pos_m[4][0] = px + 0.5 * rx - HALF_SQRT3 * r * tx;
+    lp.pos_m[4][1] = py + 0.5 * ry - HALF_SQRT3 * r * ty;
+    lp.pos_m[4][2] = pz + 0.5 * rz - HALF_SQRT3 * r * tz;
+
+    lp.valid = true;
+    return lp;
+}
+
 } // namespace substrate
 

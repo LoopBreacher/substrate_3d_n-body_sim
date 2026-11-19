@@ -10,7 +10,7 @@
 
 **Real-Time Bare-Metal Spatial Address Deletion Engine (C++20 / CUDA / OpenGL 4.6)**
 
-An interactive, GPU-accelerated 3D astrophysical laboratory built directly on the **Substrate Logistics** ($`\Omega\mathrm{GLR}`$) theoretical framework by Marco Lindenbeck. Designed as an executable companion and empirical testbed for the foundational Substrate Logistics manuscripts, this engine integrates the coupled **43-body Solar System** (Sun, 8 planets, 21 major moons across Earth, Mars, Jupiter, Saturn, Uranus, Neptune, and Pluto, 8 dwarf planets/major asteroids, 3 Lagrange $`L_4/L_5`$ Trojan exemplars, and periodic comet `1P/Halley`) alongside **3,000 to 1,500,000+ test bodies across 7 authentic dynamical families** (Kirkwood-sculpted Main Belt, Hilda `3:2` Resonant Triangle, Jupiter `L4/L5` Greek & Trojan camps, `3:2` Plutinos, Cold/Hot Classical Kuiper Belts, Scattered Disk, and Detached Sednoids) in real time via zero-copy CUDA–OpenGL VBO interop.
+An interactive, GPU-accelerated 3D astrophysical laboratory built directly on the **Substrate Logistics** ($`\Omega\mathrm{GLR}`$) theoretical framework by Marco Lindenbeck. Designed as an executable companion and empirical testbed for the foundational Substrate Logistics manuscripts, this engine integrates the coupled **55-body Solar System synchronized to the J2000.0 epoch** (Sun, 8 planets, 23 major moons across Earth, Mars, Jupiter, Saturn, Uranus, Neptune, and Pluto with regular moons rotated into their host planet's true 3D equatorial plane, 11 dwarf planets/TNOs/major asteroids, 3 Centaurs, 2 near-Earth asteroids, 3 Lagrange $`L_4/L_5`$ Trojan exemplars, 2 periodic comets `1P/Halley` and `67P/Churyumov-Gerasimenko`, and hyperbolic interstellar visitor `1I/'Oumuamua`) alongside **3,000 to 1,500,000+ test bodies across 8 authentic dynamical families** (Kirkwood-sculpted Main Belt, Hilda `3:2` Resonant Triangle, Jupiter `L4/L5` Greek & Trojan camps, `3:2` Plutinos, Cold/Hot Classical Kuiper Belts, Scattered Disk, Detached Sednoids, and an isotropic 3D Hills / Inner Oort Cloud spanning `520–16,500 AU`) in real time via zero-copy CUDA–OpenGL VBO interop.
 
 > **Core Distinction:** Unlike planetarium or ephemeris viewers that replay pre-fitted observation tables, and unlike classical N-body solvers built around Newton's empirical gravitational constant $`G`$, **Newton's constant** $`G`$ **and empirical boundary cutoffs do not exist anywhere in this codebase.** Every trajectory, orbital perturbation, perihelion precession, tidal boundary, magnetospheric ring-current limit, and heliospheric ram-pressure boundary emerges from discrete sub-node spatial address deletion and 120-cell topological invariants.
 
@@ -82,7 +82,7 @@ $$
 \rho_{N,\mathrm{GC}} = \frac{\Sigma_{0,\mathrm{Ledger}}}{m_p c^2} = 3.9928 \approx 4.0\,\mathrm{nodes/m^3} \quad \left(\equiv 1\,\mathrm{He^4}\ \alpha\text{-particle}/\mathrm{m^3}\right)
 $$
 
-Active spatial address deletion triggers strictly when localized node density saturates all four tetrahedral vector channels ($`\rho_N \ge 4.0\,\mathrm{nodes/m^3}`$). At every Velocity-Verlet sub-step, the CUDA kernels evaluate:
+Active spatial address deletion triggers strictly when localized node density saturates all four tetrahedral vector channels ($`\rho_N \ge 4.0\,\mathrm{nodes/m^3}`$). At every symplectic sub-step, the CUDA kernels evaluate:
 
 $$
 \mathbf{a}_i = \sum_{j \ne i} \frac{N_j \mathcal{K}_\Omega \, \Theta(\rho_{N,j} - 4.0)}{R_{ij}^2} \left(1 + \frac{3 N_j \mathcal{K}_\Omega}{c^2 R_{ij}}\right) \hat{\mathbf{R}}_{ij}
@@ -221,27 +221,28 @@ Only the global Substrate constants ($`m_p`$, $`\bar{\lambda}_p`$, $`c`$, $`\mat
 ### 4.2. Initial Boundary Conditions at t = 0 Only
 
 Configured once at startup in [`payload.cpp`](native_engine/src/payload.cpp):
-1. **43 Mutually Coupled Heavy Bodies** (Sun, Mercury, Venus, Earth + Moon, Mars + Phobos/Deimos, Jupiter + Io/Europa/Ganymede/Callisto, Saturn + Titan/Mimas/Enceladus/Tethys/Dione/Rhea/Iapetus, Uranus + Miranda/Ariel/Umbriel/Titania/Oberon, Neptune + retrograde Triton, Ceres/Vesta/Pallas/Hygiea, Pluto + Charon, Haumea, Makemake, Eris, Sedna, Lagrange exemplars `588 Achilles (Jup L4)`, `617 Patroclus (Jup L5)`, `2010 TK7 (Earth L4)`, and retrograde periodic comet `1P/Halley`):
+1. **55 Mutually Coupled Heavy Bodies (Synchronized to J2000.0 Epoch: 2000-Jan-01 12:00 TT)** — Sun, Mercury, Venus, Earth + Moon, Mars + Phobos/Deimos, Jupiter + Io/Europa/Ganymede/Callisto, Saturn + Titan/Mimas/Enceladus/Tethys/Dione/Rhea/Iapetus, Uranus + Miranda/Ariel/Umbriel/Titania/Oberon, Neptune + retrograde Triton/Proteus/Nereid, Main Belt asteroids Ceres/Vesta/Pallas/Hygiea, Pluto + Charon, trans-Neptunian dwarfs Haumea/Makemake/Eris/Sedna/`50000 Quaoar`/`225088 Gonggong`/`90482 Orcus`, outer-system Centaurs `2060 Chiron`/`10199 Chariklo`/`5145 Pholus`, near-Earth asteroids `99942 Apophis`/`101955 Bennu`, Lagrange exemplars `588 Achilles (Jup L4)`, `617 Patroclus (Jup L5)`, `2010 TK7 (Earth L4)`, periodic comets `1P/Halley` and `67P/Churyumov-Gerasimenko`, and hyperbolic interstellar visitor `1I/'Oumuamua` ($`a = -1.2798\,\mathrm{AU}`$, $`e = 1.20113`$, $`v_\infty = 26.32\,\mathrm{km/s}`$):
    * **Physical Mass** $`M`$ (kg) $`\Rightarrow`$ converted at load into integer node count $`N = M / m_p`$.
    * **Physical Mean Volumetric Radius** $`R`$ (m) $`\Rightarrow`$ converted into volume $`V = \frac{4}{3}\pi R^3`$ and base node density $`\rho_N = N / V`$.
-   * **Initial Orbital Placement** $`(a_0, e_0, i_0, \Omega_0, \omega_0, \nu_0)`$ $`\Rightarrow`$ evaluated **once at startup** into 3D Cartesian state vectors $`(\mathbf{r}_0, \mathbf{v}_0)`$ using exact mutual two-body + oblate $`J_2`$ parameters $`\mu = ((M_{\mathrm{parent}} + M_{\mathrm{child}})/m_p) \mathcal{K}_\Omega [1 + \frac{3}{2}J_2(R_p/a)^2]`$ (without $`G`$), balanced across all local planet–moon subsystem barycenters and the global Solar System barycenter. Once uploaded to GPU VRAM, these initial elements are **discarded**.
-   * **Axial Rotation & Moment of Inertia**: Free rotators (Sun, planets, dwarf planets, asteroids) seed their initial sidereal rotation period, axial obliquity $`\varepsilon`$, and dimensionless polar moment of inertia $`C / (M R^2)`$; all **21 moons** use `tidalLockMode = 1` (`1:1` synchronous lock) and **Mercury** uses `tidalLockMode = 2` (`3:2` spin-orbit resonance) so their rotation periods and spin axes emerge dynamically from their live orbits.
+   * **J2000.0 Orbital Placement & True Equatorial Moon Alignment** $`(a_0, e_0, i_0, \Omega_0, \omega_0, \nu_0)`$ $`\Rightarrow`$ evaluated **once at startup** into 3D Cartesian state vectors $`(\mathbf{r}_0, \mathbf{v}_0)`$ using exact mutual two-body + oblate $`J_2`$ parameters $`\mu = ((M_{\mathrm{parent}} + M_{\mathrm{child}})/m_p) \mathcal{K}_\Omega [1 + \frac{3}{2}J_2(R_p/a)^2]`$ (without $`G`$). Regular equatorial moons of Mars (`25.19°`), Jupiter (`3.13°`), Saturn (`26.73°`, including Titan), Uranus (`97.77°`), and Neptune (`28.32°`, including retrograde Triton and Proteus) are rotated directly into their parent planet's 3D spin-axis equatorial frame (`rotateFromParentEquator`) so they align cleanly with the parent's $`J_2`$ bulge, while outer Laplace-plane moons (`Moon`, `Iapetus`, `Charon`, `Nereid`) remain in the ecliptic frame. All local planet–moon subsystem barycenters and the global Solar System barycenter are balanced at load, after which initial elements are **discarded**.
+   * **Axial Rotation & Moment of Inertia**: Free rotators (Sun, planets, dwarf planets, asteroids, Centaurs, comets, and eccentric outer moon `Nereid` at `11.594 h`) seed their initial sidereal rotation period, axial obliquity $`\varepsilon`$, and dimensionless polar moment of inertia $`C / (M R^2)`$; all **22 regular/locked moons** use `tidalLockMode = 1` (`1:1` synchronous lock) and **Mercury** uses `tidalLockMode = 2` (`3:2` spin-orbit resonance) so their rotation periods and spin axes emerge dynamically from their live orbits.
    * **Visual Metadata**: Display name, parent body identifier (used only to select the reference body for relative inspector telemetry), RGB color, and sprite pixel diameter.
-2. **3,000 – 1,500,000 Test Particles Across 7 Authentic Dynamical Families**:
-   * **Kirkwood-Sculpted Main Asteroid Belt** (`2.10–3.26 AU`, 80% of `numAsteroids`): Partitioned into Inner (Flora/Vesta, `2.10–2.50 AU`), Middle (Eunomia/Maria, `2.50–2.825 AU`), and Outer (Koronis/Themis/Hygiea, `2.825–3.26 AU`) zones with inverted Gaussian rejection notches across Jupiter's `4:1`, `3:1`, `5:2`, `7:3`, and `2:1` mean-motion resonances.
-   * **Hilda 3:2 Resonant Triangle** (`a ≈ 3.972 AU`, 8% of `numAsteroids`): Phase-correlated longitude of perihelion $`\varpi = 3\lambda_{\mathrm{Jup}} - 3M + \delta\phi`$ forming the equilateral 3-fold Hilda triangle with aphelia at Jupiter's $`L_4, L_5, L_3`$ zones.
-   * **Jupiter L4 (`+60°` Greek Camp) & L5 (`-60°` Trojan Camp) Swarms** (`a ≈ 5.2044 AU`, 12% of `numAsteroids`): Librating naturally in tadpole orbits around the Sun–Jupiter triangular Lagrange points with zero artificial rotating-frame constraints.
-   * **Outer Trans-Neptunian Populations** (`numKBOs`): **3:2 Resonant Plutinos** (`39.1–39.8 AU`, 18%), **Cold Classical Kuiper Belt** (`42.0–47.6 AU`, $`\sigma_i = 2.2^\circ`$, terminating sharply at Neptune's `2:1` cliff at `47.8 AU`, 45%), **Hot Classical Kuiper Belt** (`40.2–47.6 AU`, $`\sigma_i = 13.5^\circ`$, 22%), **Scattered Disk** (`48.0–72.0 AU`, 10%), and **Detached Sednoids** (`75.0–520.0 AU`, $`q \in [42, 80]\,\mathrm{AU}`$ spanning the `89.44 AU` Termination Shock and `120.74 AU` Heliopause, 5%).
+2. **3,000 – 1,500,000 Test Particles Across 8 Authentic Dynamical Families**:
+   * **Kirkwood-Sculpted Main Asteroid Belt** (`2.10–3.26 AU`, 80% of `numAsteroids`): Partitioned into Inner (Flora/Vesta, `2.10–2.50 AU`), Middle (Eunomia/Maria, `2.50–2.825 AU`), and Outer (Koronis/Themis/Hygiea, `2.825–3.26 AU`) zones with inverted Gaussian rejection notches across J2000.0 Jupiter's `4:1`, `3:1`, `5:2`, `7:3`, and `2:1` mean-motion resonances.
+   * **Hilda 3:2 Resonant Triangle** (`a ≈ 3.971 AU`, 8% of `numAsteroids`): Phase-correlated longitude of perihelion $`\varpi = 3\lambda_{\mathrm{Jup}} - 3M + \delta\phi`$ synchronized to J2000.0 Jupiter ($`\lambda_{\mathrm{Jup}} = 34.39644^\circ`$), forming the equilateral 3-fold Hilda triangle with aphelia at Jupiter's $`L_4, L_5, L_3`$ zones.
+   * **Jupiter L4 (`+60°` Greek Camp) & L5 (`-60°` Trojan Camp) Swarms** (`a ≈ 5.2029 AU`, 12% of `numAsteroids`): Synchronized to J2000.0 Jupiter and librating naturally in tadpole orbits around the Sun–Jupiter triangular Lagrange points with zero artificial rotating-frame constraints.
+   * **Outer Trans-Neptunian & Hills / Inner Oort Cloud Populations** (`numKBOs`): **3:2 Resonant Plutinos** (`39.1–39.8 AU`, 17%), **Cold Classical Kuiper Belt** (`42.0–47.6 AU`, $`\sigma_i = 2.2^\circ`$, terminating sharply at Neptune's `2:1` cliff at `47.8 AU`, 42%), **Hot Classical Kuiper Belt** (`40.2–47.6 AU`, $`\sigma_i = 13.5^\circ`$, 21%), **Scattered Disk** (`48.0–72.0 AU`, 10%), **Detached Sednoids** (`75.0–520.0 AU`, $`q \in [42, 80]\,\mathrm{AU}`$ spanning the `89.44 AU` Termination Shock and `120.74 AU` Heliopause, 5%), and an isotropic 3D **Hills / Inner Oort Cloud** (`520–16,500 AU`, log-uniform $`a`$, $`q \in [60, 2,400]\,\mathrm{AU}`$, $`\cos i \sim \mathcal{U}(-1, 1)`$, Kepler mean-anomaly sampling, 5%).
 
 ### 4.3. Computed 100% Live at Runtime
 
 Executed continuously in [`substrate_engine.cu`](native_engine/src/substrate_engine.cu) and [`astro_metrics.cpp`](native_engine/src/astro_metrics.cpp):
-* **All 3D Positions, Velocities & Accelerations**: Integrated every frame on the GPU via **4th-order Omelyan PEFRL symplectic composition with Kahan–Babuška–Neumaier compensated summation and dynamic CFL frequency subdivision** for all 43 mutually coupled heavy bodies (`heavySubstepKernel`) and 2nd-order symplectic Velocity Verlet for test particles (`particleStepKernel`).
+* **All 3D Positions, Velocities & Accelerations**: Integrated every frame on the GPU via **4th-order Omelyan PEFRL symplectic composition with Kahan–Babuška–Neumaier compensated summation and dynamic CFL frequency subdivision** for all 55 mutually coupled heavy bodies (`heavySubstepKernel`) and 2nd-order symplectic Velocity Verlet for test particles (`particleStepKernel`).
 * **Garbage Collection Gate** $`\Theta(\rho_N - 4.0)`$: Evaluated dynamically; overriding $`\rho_N \lt 4.0\,\mathrm{nodes/m^3}`$ updates `d_mu` in GPU memory and physically unbinds satellites in real time.
 * **Dynamic Heliospheric Ram-Pressure Boundaries & Oort Floor**: `terminationShockRadiusAU()` (`89.44 AU`), `heliopauseRadiusAU()` (`120.74 AU`), `gravitationalFloorAU()` (`2,430.82 AU`), and `outerOortStagnationAU()` (`16,490.6 AU`) are evaluated live (collapsing dynamically to `0` if the Sun is decompiled below `4.0 nodes/m^3` in the GC Sandbox).
-* **Osculating Keplerian Elements**: $`(a, e, i, \Omega, \omega, \nu, q, Q, T)`$ are **reverse-computed every frame** from raw instantaneous GPU $`(\mathbf{r}(t), \mathbf{v}(t))`$ vectors, capturing live multi-body perturbations.
+* **Osculating Keplerian Elements**: $`(a, e, i, \Omega, \omega, \nu, q, Q, T)`$ are **reverse-computed every frame** from raw instantaneous GPU $`(\mathbf{r}(t), \mathbf{v}(t))`$ vectors, capturing live multi-body perturbations as well as unbound hyperbolic flybys (`1I/'Oumuamua`).
+* **Emergent 3D Lagrange Points ($`L_1\text{–}L_5`$)** (`computeLagrangePoints()`): Solves the exact restricted three-body Euler quintic via 12 Newton–Raphson iterations for collinear $`L_1, L_2, L_3`$ and constructs equilateral $`L_4, L_5`$ in the target's instantaneous orbital plane from live GPU state and $`\mu`$ values — vanishing immediately if either body is decompiled ($`\Theta = 0`$) in the GC Sandbox.
 * **Substrate Hardware Telemetry & Darwin–Radau Quadrupole ($`J_2`$)**: River inflow $`v_{\mathrm{inflow}}`$, volumetric deletion $`\dot{V}`$, discrete pixel purge $`\dot{N}_{\mathrm{pixels}}`$, top-down quantum radius $`R_{\mathrm{quantum}}`$, Schwarzschild Kernel Lock horizon $`R_{\mathrm{EH}}`$, surface, equatorial-spin & orbital clock dephasing $`(1 - u_\Omega)`$, emergent `1:1` / `3:2` tidal spin periods, River-Metric centrifugal ratio $`q_{\mathrm{rot}} = 2(v_{\mathrm{eq}} / v_{\mathrm{inflow}})^2`$, hydrostatic Darwin–Radau quadrupole $`J_2`$ & polar flattening $`1/f`$, and both 1PN relativistic and $`J_2`$ quadrupole apsidal/nodal precession rates.
-* **Gravitational/Tidal Domains, Tilted 3D Spin Axes & Orbit Trails**: Hill sphere $`r_H`$, Laplace SOI $`r_{\mathrm{SOI}}`$, fluid & rigid Roche limits $`d_R`$, $`1R / 3R / 4R / 6.784R`$ magnetospheric shells tilted to each body's live 3D spin axis $`\hat{\mathbf{s}}`$ (with a North–South pole vector and rotating prime-meridian spoke), heliospheric $`R_{\mathrm{TS}} / R_{\mathrm{HP}} / R_g`$ rings, and parent-relative angular-stepped 3D orbit trails.
+* **Gravitational/Tidal Domains, Tilted 3D Spin Axes & Orbit Trails**: Hill sphere $`r_H`$, Laplace SOI $`r_{\mathrm{SOI}}`$, fluid & rigid Roche limits $`d_R`$, $`1R / 3R / 4R / 6.784R`$ magnetospheric shells tilted to each body's live 3D spin axis $`\hat{\mathbf{s}}`$ (with a North–South pole vector and rotating prime-meridian spoke), heliospheric $`R_{\mathrm{TS}} / R_{\mathrm{HP}} / R_g`$ & Outer Oort Core ($`6.784 R_g = 16,490.6\,\mathrm{AU}`$) shells, and parent-relative angular-stepped 3D orbit trails.
 * **Zero-Readback GPU Belt Histograms**: A dedicated shared-memory atomic CUDA kernel (`beltStatsKernel`) bins semi-major axis $`a`$ (`1.90–5.50 AU` and `30.0–72.0 AU`), eccentricity $`e`$, and Jupiter Tisserand invariant $`T_J`$ directly in VRAM, while Kirkwood (`3:1`, `5:2`, `2:1`), `3:2 Hilda`, `1:1 Trojan (L4/L5)`, and Neptune (`3:2` Plutino at `39.4 AU`, `2:1` Twotino cliff at `47.8 AU`) resonance markers are computed live from Jupiter and Neptune's instantaneous semi-major axes.
 * **Static Reference Values Note**: In Tab 1 Section D, the cosmic-scale $`H_0`$ (`59.61 / 67.42 / 73.06 km/s/Mpc`) and $`S_8`$ (`0.7542 -> 0.8326`) partitions are shown as static 120-cell manifold reference constants (since the simulation volume spans a single planetary system rather than a multi-Mpc cosmic web).
 
@@ -249,37 +250,44 @@ Executed continuously in [`substrate_engine.cu`](native_engine/src/substrate_eng
 
 ## 5. Interactive Features, Telemetry & Live Experiments
 
-### 5.1. Viewport Navigation & Smart Deconflicted 2D HUD
+### 5.1. Viewport Navigation, Solar Phase Lighting, Auto-LOD Grid & Smart HUD
 * **Camera Controls**:
   * **Left-Click + Drag**: Orbit azimuth & elevation around current focus.
-  * **Mouse Wheel** *(or Right-Click + Drag)*: Continuous zoom across **8 orders of magnitude** — from `3,500 AU` (Inner Oort / Gravitational Deletion Floor $`R_g`$) down to `1.0e-5 AU` (`≈ 1,500 km`, inner planetary magnetospheres and Martian moons) with zero floating-point jitter.
+  * **Mouse Wheel** *(or Right-Click + Drag)*: Continuous zoom across **9+ orders of magnitude** — from `25,000 AU` (framing the entire Hills / Inner Oort Cloud and the Outer Oort Stagnation Core at $`6.784 R_g = 16,490.6\,\mathrm{AU}`$) down to `1.0e-5 AU` (`≈ 1,500 km`, inner planetary magnetospheres and Martian moons) with zero floating-point jitter.
   * **Middle-Click + Drag**: Pan camera target.
   * **Click Any Object or HUD Label**: Directly selects that star, planet, dwarf planet, or moon in the Inspector.
   * **`F2` Key**: Toggles the floating **Astrophysics & Substrate Telemetry** window.
+* **True Dynamic 3D Solar Phase Lighting**: Instanced planetary/lunar sphere shaders compute the live view-space Sun direction (`uSunPos - aPos`) per body each frame so inner planets display real crescents and moons display authentic astronomical illumination phases as they orbit.
+* **Multi-Scale Auto-LOD Reference Grid**: A unit `±10` reference grid cross-fades two power-of-10 octaves smoothly across 9 orders of magnitude — anchoring to the locked target's local XY plane below `0.25 AU` (kilometer-scale moon grids) and to the Sun's ecliptic plane out to `25,000 AU`.
+* **Live Emergent `L1–L5` Lagrange Point Overlay**: Toggleable via **`Show Lagrange Points (L1-L5) for Target`**, rendering subtle emerald `Parent -> L4/L5 -> Target` equilateral guide triangles plus gold (`L1–L3`) and emerald-cyan (`L4–L5`) diamond reticles around any active planet, dwarf planet, or moon.
 * **Hierarchical Label Deconfliction**:
-  * At solar-system zoom levels, close moon systems automatically fold into clean parent badges (`Jupiter (+4)`, `Mars (+2)`, `Pluto (+1)`) so satellite names never obscure planetary labels.
+  * At solar-system zoom levels, close moon systems automatically fold into clean parent badges (`Jupiter (+4)`, `Saturn (+7)`, `Uranus (+5)`, `Neptune (+3)`, `Mars (+2)`, `Pluto (+1)`) so satellite names never obscure planetary labels.
   * When zoomed into a planetary system or inspecting a planet/moon, labels expand with 2D AABB collision avoidance and radial leader-line callouts.
 
 ### 5.2. Four-Tab Floating Telemetry Window (`Astrophysics & Substrate Telemetry`)
-1. **`1. Substrate Audit`**: Live surface & orbital River Metric inflow and pixel purge rates, Bandwidth Governor $`\Omega`$ & atomic clock lag (`ppb` and `µs/day`), 1PN perihelion precession, collective Compton floor & top-down quantum radius check, $`1R / 3R / 4R / 6.784R`$ magnetospheric shells, coarse-grained volume probe, and the **Topological Drag Pressure Floor ($`P_\delta`$) — 4-Regime Hardware Audit** (Regime I QCD/Pion, Regime II Planetary `6.784R` Magnetosphere, Regime III Solar Wind Ram-Pressure Balance with live `n_SW` / `v_SW` sliders, and Regime IV Galactic `3.829 R_d` Disk Truncation & Fermi/eROSITA Bubbles).
-2. **`2. Astrodynamics & Conservation`**: Live osculating 3D Keplerian elements, Hill sphere, Laplace SOI, Fluid/Rigid Roche limits, and rolling sparkline graphs of relative mechanical energy drift $`\lvert (E - E_0)/E_0 \rvert`$ and angular momentum drift $`\lvert (\lVert\mathbf{L}\rVert - \lVert\mathbf{L}_0\rVert)/\lVert\mathbf{L}_0\rVert \rvert`$.
+1. **`1. Substrate Audit`**: Live surface & orbital River Metric inflow and pixel purge rates, Bandwidth Governor $`\Omega`$ & atomic clock lag (`ppb` and `µs/day`), 1PN perihelion precession, collective Compton floor & top-down quantum radius check, $`1R / 3R / 4R / 6.784R`$ magnetospheric shells, coarse-grained volume probe (`1–20,000 AU`), and the **Topological Drag Pressure Floor ($`P_\delta`$) — 4-Regime Hardware Audit** (Regime I QCD/Pion, Regime II Planetary `6.784R` Magnetosphere, Regime III Solar Wind Ram-Pressure Balance with live `n_SW` / `v_SW` sliders, and Regime IV Galactic `3.829 R_d` Disk Truncation & Fermi/eROSITA Bubbles).
+2. **`2. Astrodynamics & Conservation`**: Live osculating 3D Keplerian elements (including hyperbolic escape telemetry for `1I/'Oumuamua`), Hill sphere, Laplace SOI, Fluid/Rigid Roche limits, and rolling sparkline graphs of relative mechanical energy drift $`\lvert (E - E_0)/E_0 \rvert`$ and angular momentum drift $`\lvert (\lVert\mathbf{L}\rVert - \lVert\mathbf{L}_0\rVert)/\lVert\mathbf{L}_0\rVert \rvert`$.
 3. **`3. Belt Resonances (GPU)`**: Real-time GPU-binned histograms of Inner System (`1.90–5.50 AU`: Main Belt Kirkwood gaps, `3:2` Hildas & `1:1` Jupiter Trojans) and Kuiper Belt + Scattered Disk (`30–72 AU`) semi-major axes with live Kirkwood (`3:1, 5:2, 2:1`), `3:2 Hilda`, `1:1 Trojan (L4/L5)`, and Neptune (`3:2 Plutino`, `2:1 Cliff`) resonance markers, eccentricity distribution, and Jupiter Tisserand parameter ($`T_J`$) dynamical classification.
 4. **`4. GC Sandbox (Theta Filter)`**: Interactive node-density override slider spanning $`10^{-2}`$ to $`10^{32}\,\mathrm{nodes/m^3}`$ to test the $`\rho_{N,\mathrm{GC}} = 4.0\,\mathrm{nodes/m^3}`$ compilation threshold live on the GPU.
 
-### 5.3. Four Recommended Live Experiments
+### 5.3. Five Recommended Live Experiments
 1. **Unbinding Jupiter's Moons Across the 4.0 nodes/m³ Compilation Threshold**:
    * Select **Jupiter**, click **`Zoom: Moon / Hill System`** in the Control Center, and watch `Io`, `Europa`, `Ganymede`, and `Callisto` trace closed orbital rings inside Jupiter's amber Hill sphere.
    * Open **Tab 4 (`GC Sandbox`)** and click **`Decompile -> I-Phase (1.2 nodes/m^3, Theta = 0)`**.
-   * Because $`\rho_N \lt 4.0\,\mathrm{nodes/m^3}`$, $`\Theta_{\mathrm{Jupiter}}`$ flips to `0` on the GPU, shutting off Jupiter's active spatial address deletion ($`g_\Omega = 0`$). All four Galilean moons immediately transition onto straight tangential escape trajectories into heliocentric space! Click **`Reload Pristine Solar System Orbits`** to restore the system.
-2. **Inspecting the Heliospheric Ram-Pressure Termination Shock (`89.44 AU`) & Heliopause (`120.74 AU`)**:
+   * Because $`\rho_N \lt 4.0\,\mathrm{nodes/m^3}`$, $`\Theta_{\mathrm{Jupiter}}`$ flips to `0` on the GPU, shutting off Jupiter's active spatial address deletion ($`g_\Omega = 0`$) and instantly collapsing Jupiter's emergent `L1–L5` Lagrange markers. All four Galilean moons immediately transition onto straight tangential escape trajectories into heliocentric space! Click **`Reload Pristine Solar System Orbits`** to restore the system.
+2. **Inspecting the Heliospheric Ram-Pressure Termination Shock (`89.44 AU`), Heliopause (`120.74 AU`) & Outer Oort Core (`16,491 AU`)**:
    * Click **`Zoom: Heliosphere (TS 89.4 AU / HP 120.7 AU)`** in the Control Center to frame the amber Termination Shock ring (`89.44 AU`) and blue Heliopause wireframe sphere (`120.74 AU`) derived from $`P_{\mathrm{SW}}(R) = P_\delta = 0.2834\,\mathrm{pPa}`$.
    * Open **Tab 1 (`1. Substrate Audit`)** and adjust the **Solar Wind `n(1 AU)` and `v_SW`** sliders to watch the Termination Shock and Heliopause expand and contract dynamically across the Voyager 1 and Voyager 2 crossing radii.
+   * Click **`Zoom: Outer Oort Core (16,491 AU)`** to pull out across the isotropic 3D Hills / Inner Oort Cloud and frame both the Solar Gravitational Floor $`R_g`$ (`2,430.8 AU`) and Outer Oort Core $`6.784 R_g`$ (`16,490.6 AU`) wireframe shells.
 3. **Inspecting Earth's 3R Plasmapause, 4R Van Allen & 6.784R Ring-Current Shells**:
    * Select **Earth** and click **`Zoom: 3R/4R/6.78R Magnetosphere`**.
    * Observe the nested $`1R`$ core ring (`6,371 km`), electric-cyan $`3R`$ **directional mass/axial wireframe shell** (`19,113 km`), violet $`4R`$ **unspooled 4-channel boundary** (`25,484 km`), and gold $`6.784R`$ **outer ring-current trapping ring** (`43,221 km`), while verifying `Top-Down Quantum Radius: 6371.13 km` in Tab 1.
 4. **Observing Phobos Inside Mars's Fluid Roche Limit**:
    * Select **Phobos** and click **`Zoom: Moon / Hill System`** (then scroll in slightly toward Mars).
-   * Notice Phobos (`a = 9,376 km`) orbiting visibly **inside** Mars's crimson **Fluid Roche Limit** ring (`10,775 km`, `r / d_R = 0.870`), flagged in Tab 2 as tidally stressed above the rigid-body rubble-pile limit (`5,563 km`).
+   * Notice Phobos (`a = 9,376 km`, orbiting cleanly in Mars's `25.19°` tilted equatorial plane) visibly **inside** Mars's crimson **Fluid Roche Limit** ring (`10,775 km`, `r / d_R = 0.870`), flagged in Tab 2 as tidally stressed above the rigid-body rubble-pile limit (`5,563 km`).
+5. **Tracking Emergent `L4/L5` Trojan Libration & Hyperbolic `1I/'Oumuamua` Flyby**:
+   * Select **Jupiter** at ~`18 AU` zoom with **`Show Lagrange Points (L1-L5) for Target`** enabled to watch `588 Achilles`, `617 Patroclus`, and the emerald Greek/Trojan particle clouds librate naturally around the live equilateral `L4`/`L5` reticles.
+   * Select **`1I/'Oumuamua`** to follow its high-inclination (`122.74°`), inbound hyperbolic perihelion passage (`e = 1.20113`, `v_inf = 26.32 km/s`) through the inner Solar System under pure $`\mathcal{K}_\Omega`$ spatial address deletion.
 
 ---
 
@@ -292,7 +300,7 @@ flowchart LR
         P["particleStepKernel&lt;MIXED&gt;<br/>(FP64 State + Dual FP32 Accel,<br/>Up to 1.5M+ Threads)"]
         W["writeRenderKernel<br/>(FP64 Camera-Origin Shift -> FP32 AU)"]
         VBO["Mapped OpenGL VBOs<br/>(cudaGraphicsGLRegisterBuffer)"]
-        R["Instanced Quad Shaders<br/>+ Heliosphere &amp; 3R/4R/6.78R Shells"]
+        R["Solar-Phase Quad Shaders<br/>+ Auto-LOD Grid &amp; 3R/4R/6.78R/Oort Shells"]
         B["beltStatsKernel<br/>(Shared-Mem Atomic Histograms)"]
     end
 
@@ -304,10 +312,10 @@ flowchart LR
 ```
 
 ### Key Numerical & Rendering Optimizations
-* **4th-Order Omelyan PEFRL + Kahan–Babuška + Dynamic CFL Sub-Stepping**: All 43 mutually coupled heavy bodies execute Omelyan's 4th-order Position-Extended Forest-Ruth-Like (`PEFRL`) 5-Drift, 4-Kick symplectic composition inside **one thread block** (`__shared__` memory) with Kahan–Babuška–Neumaier compensated summation (`106-bit` effective mantissa in registers) and **instantaneous Courant–Friedrichs–Lewy (CFL) dynamical frequency subdivision** ($`\omega_{\max} = \sqrt{\max_{i \neq j}(\mu_i + \mu_j)/r_{ij}^3}`$, Courant limit $`\eta_{\mathrm{CFL}} = 0.50\,\mathrm{rad}`$). This guarantees unconditional numerical stability across all UI slider combinations (`Macro dt` up to `48 h`, `Moon Sub-steps` down to `1`) without body-specific overrides, while preserving instantaneous tangent escape when any parent body is decompiled ($`\Theta(\rho_N - 4) = 0`$).
-* **Zero-Divergence $`O(1)`$ Parent–Moon $`J_2`$ Reaction Bitmask**: Inside `heavyAccel`, the all-pairs $`O(M)`$ monopole + 1PN loop runs 100% branch-free (`#pragma unroll 4`), while oblate quadrupole $`J_2`$ forces are evaluated outside the inner loop in $`O(1)`$ per satellite (`parentIdx > 0`) paired with a 64-bit satellite bitmask (`d_moonMask`, `__ffsll`) on each host planet for exact Newton's 3rd Law action–reaction symmetry (`42` quadrupole evaluations per stage instead of `3,612`).
+* **4th-Order Omelyan PEFRL + Kahan–Babuška + Dynamic CFL Sub-Stepping**: All 55 mutually coupled heavy bodies execute Omelyan's 4th-order Position-Extended Forest-Ruth-Like (`PEFRL`) 5-Drift, 4-Kick symplectic composition inside **one thread block** (`__shared__` memory) with Kahan–Babuška–Neumaier compensated summation (`106-bit` effective mantissa in registers) and **instantaneous Courant–Friedrichs–Lewy (CFL) dynamical frequency subdivision** ($`\omega_{\max} = \sqrt{\max_{i \neq j}(\mu_i + \mu_j)/r_{ij}^3}`$, Courant limit $`\eta_{\mathrm{CFL}} = 0.50\,\mathrm{rad}`$). This guarantees unconditional numerical stability across all UI slider combinations (`Macro dt` up to `48 h`, `Moon Sub-steps` down to `1`) without body-specific overrides, while preserving instantaneous tangent escape when any parent body is decompiled ($`\Theta(\rho_N - 4) = 0`$).
+* **Zero-Divergence $`O(1)`$ Parent–Moon $`J_2`$ Reaction Bitmask**: Inside `heavyAccel`, the all-pairs $`O(M)`$ monopole + 1PN loop runs 100% branch-free (`#pragma unroll 4`), while oblate quadrupole $`J_2`$ forces are evaluated outside the inner loop in $`O(1)`$ per satellite (`parentIdx > 0`) paired with a 64-bit satellite bitmask (`d_moonMask`, `__ffsll`) on each host planet for exact Newton's 3rd Law action–reaction symmetry (`46` quadrupole evaluations per stage across `23` moons instead of `5,940`).
 * **Dual-Accumulator Mixed Precision (`Precision::Mixed`) & Sub-Mantissa $`J_2`$ Gate**: Test-particle positions and velocities remain in **IEEE FP64**, while pairwise force loops (`#pragma unroll 4`) run in FP32 AU coordinates using **two separate accumulators** (`axN` for primary deletion and `axR` for the $`\sim 10^{-8}`$ relativistic precession term) so 1PN precession is never lost to FP32 mantissa rounding, with test-particle $`J_2`$ quadrupole evaluation gated to $`r \lt 0.01\,\mathrm{AU}`$ (`~1.5M km`). Full IEEE FP64 mode (`Precision::FP64`) is selectable at runtime with one click.
-* **Camera-Relative Origin Shifting**: When locked onto any planet or moon (even Pluto/Charon at `39.5 AU`), `writeRenderKernel` subtracts the target's exact FP64 position *before* casting to FP32, completely eliminating vertex jitter down to kilometer scales.
+* **Camera-Relative Origin Shifting, Solar Phase Shading & Auto-LOD Grid**: When locked onto any planet or moon (even Pluto/Charon at `39.5 AU`), `writeRenderKernel` subtracts the target's exact FP64 position *before* casting to FP32, completely eliminating vertex jitter down to kilometer scales, while the instanced sphere shader computes live view-space Sun illumination (`uSunPos - aPos`) and the unit `±10` reference grid cross-fades two power-of-10 Auto-LOD octaves from `10⁻⁵ AU` to `25,000 AU`.
 * **Zero-Copy VBO Rendering**: CUDA writes rendered positions directly into OpenGL 4.6 vertex buffers; zero particle positions are copied back to system RAM.
 
 ### Empirical Verification & Throughput (`NVIDIA GeForce RTX 5070 Ti`, `sm_120`)
@@ -330,29 +338,31 @@ flowchart LR
 | **Earth Surface Clock Lag** ($`1 - u_\Omega`$) | `0.6958 ppb` (`-60.12 µs/day`; `+0.0012 ppb` eq. spin) | `0.696 ppb` terrestrial redshift |
 | **Earth River-Metric Flattening & $`J_2`$** | `q = 0.00345`, `J2 = 1.0728e-3`, `1/f = 299.9` | `J2 = 1.0826e-3`, `1/f = 298.26` observed |
 | **Jupiter / Saturn Derived $`J_2`$** | `J2_Jup = 1.458e-2`, `J2_Sat = 1.462e-2` | `1.470e-2` / `1.629e-2` (Darwin–Radau) |
-| **Mercury 3:2 Spin-Orbit Period** | `58.657 days` (emergent $`\frac{2}{3}T_{\mathrm{orb}}`$) | `58.646 days` observed (`99.98%`) |
+| **Mercury 3:2 Spin-Orbit Period** | `58.658 days` (emergent $`\frac{2}{3}T_{\mathrm{orb}}`$) | `58.646 days` observed (`99.98%`) |
 | **Mercury 1PN Perihelion Precession** | `42.96 arcsec/cy` | `42.98 arcsec/cy` observed |
 | **Solar Wind Termination Shock** ($`R_{\mathrm{TS}}`$) | `89.44 AU` | `83.7–94.0 AU` (Voyager 2 / 1) |
 | **Solar Wind Heliopause** ($`R_{\mathrm{HP}}`$) | `120.74 AU` | `119.0–121.6 AU` (Voyager 2 / 1) |
 | **Solar Gravitational Floor & Oort Core** ($`R_g`$ / $`6.784 R_g`$) | `2,430.82 AU` / `16,490.6 AU` | Inner Hills cloud / Outer Oort core transition |
 | **Galactic 2D Disk Truncation Ratio** ($`R_{\mathrm{trunc}} / R_d`$) | `3.829 R_d` | `3.8 ± 0.7 R_d` observed edge-on spiral mean |
-| **Phobos 1-Yr Orbit** (`substeps = 20`) | `a = 9,376.11 km`, `e = 0.01515` (`BOUND`) | `T_rot = 7.657 h` (`1:1`), `dω/dt = +292.7°/yr` |
-| **CFL Torture Test** (`dt = 48 h`, `sub = 1`) | `a = 9,374.92 km`, `e = 0.01056` (`BOUND`) | `1,148` Phobos orbits; Mars `Theta = 0` -> tangent escape |
-| **1-Year Symplectic Energy / AngMom Drift** | `3.020e-10` / `3.696e-12` | 4th-Order PEFRL + Kahan + $`J_2`$ (`substeps = 20`) |
+| **`1I/'Oumuamua` Hyperbolic State** | `r = 1.821 AU`, `e = 1.20113` (`HYPERBOLIC`), `v = 40.82 km/s` | Inbound interstellar flyby (`v_inf = 26.32 km/s`) |
+| **Sun–Jupiter Emergent $`L_1`$ Distance** | `0.33120 AU` from Jupiter ($`\alpha = 9.5368 \times 10^{-4}`$) | Exact 12-iter Newton–Raphson Euler quintic root |
+| **Phobos 1-Yr Orbit** (`substeps = 20`) | `a = 9,376.11 km`, `e = 0.01516` (`BOUND`) | `T_rot = 7.657 h` (`1:1`), `dω/dt = +292.5°/yr` |
+| **CFL Torture Test** (`dt = 48 h`, `sub = 1`) | `a = 9,374.93 km`, `e = 0.01057` (`BOUND`) | `1,148` Phobos orbits; Mars `Theta = 0` -> tangent escape |
+| **1-Year Symplectic Energy / AngMom Drift** | `1.642e-10` / `2.934e-12` | 55-body 4th-Order PEFRL + Kahan + Equatorial $`J_2`$ |
 
-#### CUDA Physics Kernel Scaling (43 Heavy Bodies + N Test Particles, 20 4th-Order PEFRL Sub-steps/Step)
+#### CUDA Physics Kernel Scaling (55 Heavy Bodies + N Test Particles, 20 4th-Order PEFRL Sub-steps/Step)
 | Particle Count ($`N`$) | Precision Mode | GPU Step Time | Physics Rate | Interaction Throughput | Physics VRAM |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| **3,000** | Mixed (FP64/FP32) | `1.677 ms` | `596.5 Hz` | `0.10 GI/s` | `0.21 MB` |
-| **100,000** | Mixed (FP64/FP32) | `1.777 ms` | `562.7 Hz` | `2.44 GI/s` | `6.87 MB` |
-| **250,000** | Mixed (FP64/FP32) | `1.860 ms` | `537.5 Hz` | `5.80 GI/s` | `17.17 MB` |
-| **500,000** | Mixed (FP64/FP32) | `2.231 ms` | `448.2 Hz` | `9.65 GI/s` | `34.34 MB` |
-| **1,000,000** | Mixed (FP64/FP32) | `2.812 ms` | `355.6 Hz` | `15.31 GI/s` | `68.67 MB` |
-| **3,000** | Full IEEE FP64 | `1.621 ms` | `616.8 Hz` | `0.10 GI/s` | `0.21 MB` |
-| **100,000** | Full IEEE FP64 | `1.873 ms` | `534.0 Hz` | `2.32 GI/s` | `6.87 MB` |
-| **250,000** | Full IEEE FP64 | `2.261 ms` | `442.3 Hz` | `4.77 GI/s` | `17.17 MB` |
-| **500,000** | Full IEEE FP64 | `2.931 ms` | `341.2 Hz` | `7.35 GI/s` | `34.34 MB` |
-| **1,000,000** | Full IEEE FP64 | `4.394 ms` | `227.6 Hz` | `9.80 GI/s` | `68.67 MB` |
+| **3,000** | Mixed (FP64/FP32) | `1.880 ms` | `531.8 Hz` | `0.12 GI/s` | `0.21 MB` |
+| **100,000** | Mixed (FP64/FP32) | `2.034 ms` | `491.7 Hz` | `2.73 GI/s` | `6.87 MB` |
+| **250,000** | Mixed (FP64/FP32) | `2.248 ms` | `444.9 Hz` | `6.14 GI/s` | `17.17 MB` |
+| **500,000** | Mixed (FP64/FP32) | `2.617 ms` | `382.2 Hz` | `10.53 GI/s` | `34.34 MB` |
+| **1,000,000** | Mixed (FP64/FP32) | `3.406 ms` | `293.6 Hz` | `16.17 GI/s` | `68.67 MB` |
+| **3,000** | Full IEEE FP64 | `1.897 ms` | `527.1 Hz` | `0.12 GI/s` | `0.21 MB` |
+| **100,000** | Full IEEE FP64 | `2.175 ms` | `459.8 Hz` | `2.56 GI/s` | `6.87 MB` |
+| **250,000** | Full IEEE FP64 | `2.647 ms` | `377.7 Hz` | `5.22 GI/s` | `17.17 MB` |
+| **500,000** | Full IEEE FP64 | `3.474 ms` | `287.9 Hz` | `7.93 GI/s` | `34.34 MB` |
+| **1,000,000** | Full IEEE FP64 | `5.262 ms` | `190.0 Hz` | `10.46 GI/s` | `68.67 MB` |
 
 ---
 
@@ -388,13 +398,13 @@ native_engine/
 ├── build.ps1                   # Automated MSVC + Ninja + NVCC build script
 ├── third_party/glad/           # Vendored GLAD 2 OpenGL 4.6 Core loader
 └── src/
-    ├── substrate_constants.h   # Bare-metal Substrate constants, exact C_delta & stagnation operators
-    ├── payload.h / .cpp        # t=0 Solar System & Main/Kuiper/Scattered Disk Keplerian seeding
-    ├── substrate_engine.h / .cu# CUDA Verlet kernels, GC override, ram-pressure heliosphere & histograms
-    ├── astro_metrics.h / .cpp  # Live Keplerian, River Metric, clock lag & 1R/3R/4R/6.784R domain audits
-    ├── renderer.h / .cpp       # CUDA-GL VBO interop, instanced sprites, shells & trails
-    ├── telemetry_ui.h / .cpp   # Smart 2D HUD, 4-tab Telemetry & 4-Regime P_delta Hardware Audit
-    └── main.cpp                # Application loop, Control Center & CLI benchmark suite
+    ├── substrate_constants.h   # Bare-metal Substrate constants, exact C_delta, Darwin-Radau J2 & operators
+    ├── payload.h / .cpp        # J2000.0 55-body equatorial seeding + 8 belt / Hills-Oort particle families
+    ├── substrate_engine.h / .cu# 4th-order PEFRL + CFL + J2 bitmask CUDA kernels, GC override & histograms
+    ├── astro_metrics.h / .cpp  # Live Keplerian, L1-L5 Lagrange quintic, River Metric & 1R/3R/4R/6.784R audits
+    ├── renderer.h / .cpp       # CUDA-GL VBO interop, solar phase lighting, Auto-LOD grid, shells & trails
+    ├── telemetry_ui.h / .cpp   # Smart 2D HUD, L1-L5 markers, 4-tab Telemetry & 4-Regime P_delta Audit
+    └── main.cpp                # Application loop, 25,000 AU camera, Control Center & CLI benchmark suite
 ```
 
 ---

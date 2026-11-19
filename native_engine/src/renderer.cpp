@@ -4,6 +4,7 @@
 #include <cuda_gl_interop.h>
 #include <glm/gtc/type_ptr.hpp>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <stdexcept>
@@ -33,6 +34,8 @@ layout(location = 1) in vec4 aColor;  // per instance: normalized RGBA8
 layout(location = 2) in vec2 aSize;   // per instance: x = diameter px, y = emissive flag
 
 uniform mat4 uViewProj;
+uniform mat4 uView;
+uniform vec3 uSunPos;
 uniform vec2 uViewport;
 uniform bool uLog;
 uniform float uSizeScale;
@@ -42,6 +45,7 @@ out vec2 vUV;
 out vec4 vColor;
 flat out float vEmissive;
 flat out float vLit;
+flat out vec3 vSunDirView;
 
 void main() {
     vec2 corner = vec2(float(gl_VertexID & 1), float((gl_VertexID >> 1) & 1)) * 2.0 - 1.0;
@@ -55,6 +59,9 @@ void main() {
     vColor = vec4(aColor.rgb, aColor.a * uAlphaScale);
     vEmissive = aSize.y;
     vLit = size > 3.5 ? 1.0 : 0.0;
+    vec3 toSun = uSunPos - aPos.xyz;
+    float dSun = length(toSun);
+    vSunDirView = (dSun > 1e-7) ? normalize(mat3(uView) * toSun) : vec3(0.0, 0.0, 1.0);
 }
 )";
 
@@ -63,6 +70,7 @@ in vec2 vUV;
 in vec4 vColor;
 flat in float vEmissive;
 flat in float vLit;
+flat in vec3 vSunDirView;
 out vec4 fragColor;
 
 void main() {
@@ -82,10 +90,10 @@ void main() {
         fragColor = vec4(c, edge);
         return;
     }
-    vec3 L = normalize(vec3(-0.4, 0.5, 0.75));
+    vec3 L = normalize(vSunDirView);
     float diff = max(dot(n, L), 0.0);
     float spec = pow(max(dot(reflect(-L, n), vec3(0.0, 0.0, 1.0)), 0.0), 24.0) * 0.3;
-    fragColor = vec4(vColor.rgb * (0.25 + 0.85 * diff) + vec3(spec), edge);
+    fragColor = vec4(vColor.rgb * (0.09 + 0.95 * diff) + vec3(spec), edge);
 }
 )";
 
@@ -225,11 +233,12 @@ void Renderer::init() {
     m_lineProg = link(kLineVS, kLineFS, true);
     m_trailProg = link(kTrailVS, kTrailFS, true);
 
-    // Reference grid in the ecliptic (XY) plane, +-150 AU, 10 AU spacing.
+    // Reusable unit reference grid in the XY plane, +-10 units, 1.0 spacing, 0.25 segment subdivision.
+    // Scales cleanly across 9 orders of magnitude (10^-5 AU moon systems to 25,000 AU Oort cloud).
     std::vector<float> grid;
-    const float ext = 150.0f, step = 10.0f, seg = 2.0f;
-    for (float c = -ext; c <= ext + 0.01f; c += step) {
-        for (float t = -ext; t < ext - 0.01f; t += seg) {
+    const float ext = 10.0f, step = 1.0f, seg = 0.25f;
+    for (float c = -ext; c <= ext + 0.001f; c += step) {
+        for (float t = -ext; t < ext - 0.001f; t += seg) {
             grid.insert(grid.end(), {c, t, 0.0f, c, t + seg, 0.0f});
             grid.insert(grid.end(), {t, c, 0.0f, t + seg, c, 0.0f});
         }
@@ -398,10 +407,36 @@ void Renderer::draw(const DrawContext& ctx, const RenderSettings& s) {
     glUniformMatrix3fv(uBasis, 1, GL_FALSE, glm::value_ptr(identityBasis));
     glUniform3fv(uOffset, 1, glm::value_ptr(ctx.worldOffsetAU));
     if (s.showGrid) {
-        glUniform1f(uScale, 1.0f);
-        glUniform4f(uColor, 0.30f, 0.38f, 0.55f, 0.22f);
         glBindVertexArray(m_gridVao);
-        glDrawArrays(GL_LINES, 0, m_gridVerts);
+        if (s.logScale) {
+            glUniform3fv(uOffset, 1, glm::value_ptr(ctx.worldOffsetAU));
+            glUniform1f(uScale, 15.0f);
+            glUniform4f(uColor, 0.30f, 0.38f, 0.55f, 0.22f);
+            glDrawArrays(GL_LINES, 0, m_gridVerts);
+        } else {
+            // Anchor at (0,0,0) when zoomed inside 0.25 AU (locked moon/planet system), otherwise Sun ecliptic
+            const glm::vec3 gridOrigin = (ctx.camDistanceAU < 0.25f)
+                                             ? glm::vec3(0.0f)
+                                             : ctx.worldOffsetAU;
+            glUniform3fv(uOffset, 1, glm::value_ptr(gridOrigin));
+
+            const float logD = std::log10(std::max(ctx.camDistanceAU * 0.45f, 1.0e-6f));
+            const float baseExp = std::floor(logD);
+            const float frac = logD - baseExp;
+            const float scaleFine = std::pow(10.0f, baseExp);
+            const float scaleCoarse = scaleFine * 10.0f;
+
+            const float alphaFine = 0.24f * (1.0f - frac);
+            if (alphaFine > 0.004f) {
+                glUniform1f(uScale, scaleFine);
+                glUniform4f(uColor, 0.30f, 0.38f, 0.55f, alphaFine);
+                glDrawArrays(GL_LINES, 0, m_gridVerts);
+            }
+            const float alphaCoarse = 0.24f * (0.35f + 0.65f * frac);
+            glUniform1f(uScale, scaleCoarse);
+            glUniform4f(uColor, 0.30f, 0.38f, 0.55f, alphaCoarse);
+            glDrawArrays(GL_LINES, 0, m_gridVerts);
+        }
     }
     if (s.showHeliopause && s.heliopauseRadiusAU > 0.0f) {
         glUniform3fv(uOffset, 1, glm::value_ptr(ctx.starCenterRelAU));
@@ -461,6 +496,8 @@ void Renderer::draw(const DrawContext& ctx, const RenderSettings& s) {
     // 3. Test Particles & Heavy Bodies
     glUseProgram(m_spriteProg);
     glUniformMatrix4fv(glGetUniformLocation(m_spriteProg, "uViewProj"), 1, GL_FALSE, vp);
+    glUniformMatrix4fv(glGetUniformLocation(m_spriteProg, "uView"), 1, GL_FALSE, glm::value_ptr(ctx.view));
+    glUniform3fv(glGetUniformLocation(m_spriteProg, "uSunPos"), 1, glm::value_ptr(ctx.starCenterRelAU));
     glUniform2fv(glGetUniformLocation(m_spriteProg, "uViewport"), 1, glm::value_ptr(ctx.viewportPx));
     glUniform1i(glGetUniformLocation(m_spriteProg, "uLog"), s.logScale);
     const GLint uSize = glGetUniformLocation(m_spriteProg, "uSizeScale");

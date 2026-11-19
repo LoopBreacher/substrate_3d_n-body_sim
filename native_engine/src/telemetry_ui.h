@@ -45,7 +45,8 @@ struct TelemetryUIState {
 };
 
 // Draws deconflicted 2D HUD labels (collapsing moon badges when zoomed out, radial spider
-// leader lines when zoomed in, click-to-select in viewport) + top-left HUD badge.
+// leader lines when zoomed in, click-to-select in viewport), emergent L1-L5 Lagrange markers,
+// and top-left HUD badge.
 void drawSmartViewportHUD(ImDrawList* bgDraw,
                           const ImVec2& displaySize,
                           const glm::mat4& viewProj,
@@ -55,6 +56,8 @@ void drawSmartViewportHUD(ImDrawList* bgDraw,
                           const SubstrateEngine& engine,
                           const RenderSettings& renderSettings,
                           bool showLabels,
+                          const glm::vec3 lpRelAU[5],
+                          bool lpValid,
                           float camDistanceAU,
                           float camAzimuthDeg,
                           float camElevationDeg,

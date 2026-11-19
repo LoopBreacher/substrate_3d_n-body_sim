@@ -50,6 +50,7 @@ struct RenderSettings {
     bool showOrbitTrails = true;
     bool showVectorChannels = true;         // 1R / 3R / 4R / 6.784R magnetospheric shells
     bool showHillAndRoche = true;           // Hill sphere & fluid Roche limit overlays
+    bool showLagrangePoints = true;         // Live emergent 3D Lagrange points (L1-L5) for active target
     bool logScale = false;
     bool additiveParticles = true;
     float particleSizeScale = 1.0f;
@@ -61,6 +62,8 @@ struct RenderSettings {
 
 struct DrawContext {
     glm::mat4 viewProj{1.0f};
+    glm::mat4 view{1.0f};
+    float camDistanceAU = 35.0f;
     glm::vec3 worldOffsetAU{0.0f};    // -origin position: ecliptic grid is world-anchored
     glm::vec3 starCenterRelAU{0.0f};  // Root star position: heliosphere is star-anchored
     glm::vec2 viewportPx{1.0f};

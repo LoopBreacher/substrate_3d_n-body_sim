@@ -79,7 +79,7 @@ public:
     double baseDensity(int bodyIdx) const;
 
     // Computes binned semi-major axis, eccentricity, and Tisserand stats directly on GPU.
-    void computeBeltStats(BeltStats& out, double jupiterSemiMajorAU = 5.2044);
+    void computeBeltStats(BeltStats& out, double jupiterSemiMajorAU = 5.202887);
 
     void beginTimer();
     void endTimer();

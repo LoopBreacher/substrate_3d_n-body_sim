@@ -98,6 +98,8 @@ void drawSmartViewportHUD(ImDrawList* bgDraw,
                           const SubstrateEngine& engine,
                           const RenderSettings& renderSettings,
                           bool showLabels,
+                          const glm::vec3 lpRelAU[5],
+                          bool lpValid,
                           float camDistanceAU,
                           float camAzimuthDeg,
                           float camElevationDeg,
@@ -187,6 +189,92 @@ void drawSmartViewportHUD(ImDrawList* bgDraw,
         bgDraw->AddLine(ImVec2(sx - r, sy + r), ImVec2(sx - r, sy + r - c), colCyan, 2.0f);
         bgDraw->AddLine(ImVec2(sx + r, sy + r), ImVec2(sx + r - c, sy + r), colCyan, 2.0f);
         bgDraw->AddLine(ImVec2(sx + r, sy + r), ImVec2(sx + r, sy + r - c), colCyan, 2.0f);
+    }
+
+    // 2b. Live Emergent 3D Lagrange Point Geometry Overlay (L1-L5) for active target
+    if (renderSettings.showLagrangePoints && lpValid && lpRelAU != nullptr &&
+        targetIdx >= 0 && targetIdx < numHeavy) {
+        const int pIdx = parentIdx[targetIdx];
+        const BodyCategory cat = heavyDescs[targetIdx].category;
+        if (pIdx >= 0 &&
+            (cat == BodyCategory::Planet || cat == BodyCategory::DwarfPlanet || cat == BodyCategory::Moon)) {
+            struct LPProj {
+                bool inFront = false;
+                bool onScreen = false;
+                float sx = 0.0f;
+                float sy = 0.0f;
+            };
+            LPProj lpP[5];
+            for (int k = 0; k < 5; ++k) {
+                glm::vec3 p = lpRelAU[k];
+                if (renderSettings.logScale) p = logCompressHUD(p);
+                const glm::vec4 clip = viewProj * glm::vec4(p, 1.0f);
+                if (clip.w <= 0.0f) continue;
+                const glm::vec3 ndc = glm::vec3(clip) / clip.w;
+                lpP[k].inFront = true;
+                lpP[k].sx = (ndc.x * 0.5f + 0.5f) * displaySize.x;
+                lpP[k].sy = (1.0f - (ndc.y * 0.5f + 0.5f)) * displaySize.y;
+                if (ndc.x >= -1.04f && ndc.x <= 1.04f && ndc.y >= -1.04f && ndc.y <= 1.04f) {
+                    lpP[k].onScreen = true;
+                }
+            }
+
+            // Subtle translucent emerald equilateral guide triangles: Parent -> L4 -> Target & Parent -> L5 -> Target
+            const ImU32 guideCol = IM_COL32(45, 225, 160, 70);
+            if (lpP[3].inFront) {
+                if (proj[pIdx].onScreen) {
+                    bgDraw->AddLine(ImVec2(proj[pIdx].sx, proj[pIdx].sy),
+                                    ImVec2(lpP[3].sx, lpP[3].sy), guideCol, 1.25f);
+                }
+                if (proj[targetIdx].onScreen) {
+                    bgDraw->AddLine(ImVec2(lpP[3].sx, lpP[3].sy),
+                                    ImVec2(proj[targetIdx].sx, proj[targetIdx].sy), guideCol, 1.25f);
+                }
+            }
+            if (lpP[4].inFront) {
+                if (proj[pIdx].onScreen) {
+                    bgDraw->AddLine(ImVec2(proj[pIdx].sx, proj[pIdx].sy),
+                                    ImVec2(lpP[4].sx, lpP[4].sy), guideCol, 1.25f);
+                }
+                if (proj[targetIdx].onScreen) {
+                    bgDraw->AddLine(ImVec2(lpP[4].sx, lpP[4].sy),
+                                    ImVec2(proj[targetIdx].sx, proj[targetIdx].sy), guideCol, 1.25f);
+                }
+            }
+
+            // Crisp diamond reticles & compact labels (L1-L3 soft gold, L4-L5 emerald-cyan)
+            static const char* kLNames[5] = {"L1", "L2", "L3", "L4", "L5"};
+            const bool closeL12 = lpP[0].onScreen && lpP[1].onScreen &&
+                                  (std::hypot(lpP[1].sx - lpP[0].sx, lpP[1].sy - lpP[0].sy) < 26.0f);
+            for (int k = 0; k < 5; ++k) {
+                if (!lpP[k].onScreen) continue;
+                const float x = lpP[k].sx;
+                const float y = lpP[k].sy;
+                const bool isTriangular = (k >= 3);
+                const float r = isTriangular ? 5.5f : 4.5f;
+                const ImU32 strokeCol = isTriangular ? IM_COL32(50, 238, 182, 235)
+                                                     : IM_COL32(255, 212, 92, 230);
+                const ImU32 fillCol   = isTriangular ? IM_COL32(12, 42, 36, 165)
+                                                     : IM_COL32(42, 34, 12, 165);
+                const ImVec2 pts[4] = {
+                    ImVec2(x, y - r), ImVec2(x + r, y), ImVec2(x, y + r), ImVec2(x - r, y)
+                };
+                bgDraw->AddConvexPolyFilled(pts, 4, fillCol);
+                bgDraw->AddPolyline(pts, 4, strokeCol, ImDrawFlags_Closed, 1.5f);
+
+                float tx = x + r + 4.0f;
+                float ty = y - 7.0f;
+                if (closeL12 && k == 0) {
+                    tx = x - r - 20.0f;
+                    ty = y - 14.0f;
+                } else if (closeL12 && k == 1) {
+                    tx = x + r + 4.0f;
+                    ty = y + 2.0f;
+                }
+                bgDraw->AddText(ImVec2(tx + 1.0f, ty + 1.0f), IM_COL32(6, 10, 16, 200), kLNames[k]);
+                bgDraw->AddText(ImVec2(tx, ty), strokeCol, kLNames[k]);
+            }
+        }
     }
 
     // 3. Determine which moons fold into their parent planet's badge vs. expand individually
@@ -562,7 +650,7 @@ void drawTelemetryWindow(TelemetryUIState& ui,
             ImGui::TextColored(ImVec4(0.0f, 0.88f, 1.0f, 1.0f),
                                "D. Zero-Sum 120-Cell Cover Ledger & Coarse-Graining");
             float probeAUf = static_cast<float>(ui.coarseProbeAU);
-            if (ImGui::SliderFloat("Probe Sphere R (AU)", &probeAUf, 1.0f, 4000.0f, "%.1f AU",
+            if (ImGui::SliderFloat("Probe Sphere R (AU)", &probeAUf, 1.0f, 20000.0f, "%.1f AU",
                                    ImGuiSliderFlags_Logarithmic)) {
                 ui.coarseProbeAU = probeAUf;
             }
@@ -796,8 +884,8 @@ void drawTelemetryWindow(TelemetryUIState& ui,
             // Compute live semi-major axes of Jupiter (idx 8) & Neptune (idx 16) for dynamic resonance markers
             const KeplerElements jupK = computeKeplerElements(8, 0, snap, engine);
             const KeplerElements nepK = computeKeplerElements(16, 0, snap, engine);
-            const double aJup = (jupK.bound && jupK.a_AU > 0.1) ? jupK.a_AU : 5.2044;
-            const double aNep = (nepK.bound && nepK.a_AU > 1.0) ? nepK.a_AU : 30.110;
+            const double aJup = (jupK.bound && jupK.a_AU > 0.1) ? jupK.a_AU : 5.202887;
+            const double aNep = (nepK.bound && nepK.a_AU > 1.0) ? nepK.a_AU : 30.069923;
 
             if (ui.beltStatsFrameCounter++ % 15 == 0) {
                 engine.computeBeltStats(ui.beltStats, aJup);

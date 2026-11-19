@@ -96,7 +96,17 @@ struct CoarseGrainAudit {
     double gravFieldEnergyDensity_Jm3 = 0.0; // u_g(R) = m_p * g_Omega^2 / (8*pi*K_Omega) vs. Sigma_0
 };
 
+struct LagrangePoints {
+    bool valid = false;
+    double alpha = 0.0;       // Node ratio N_body / (N_parent + N_body)
+    double pos_m[5][3] = {};  // World-space (m) coordinates of L1, L2, L3, L4, L5
+};
+
 KeplerElements computeKeplerElements(int bodyIdx, int parentIdx,
+                                     const HeavySnapshot& snap,
+                                     const SubstrateEngine& engine);
+
+LagrangePoints computeLagrangePoints(int bodyIdx, int parentIdx,
                                      const HeavySnapshot& snap,
                                      const SubstrateEngine& engine);
 
