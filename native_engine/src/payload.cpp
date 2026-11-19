@@ -149,6 +149,14 @@ uint32_t packRGBA(float r, float g, float b, float a) {
     return c(r) | (c(g) << 8) | (c(b) << 16) | (c(a) << 24);
 }
 
+int findBodyIndex(const std::vector<HeavyBodyDesc>& descs, const char* name) {
+    if (!name) return -1;
+    for (size_t i = 0; i < descs.size(); ++i) {
+        if (descs[i].name == name) return static_cast<int>(i);
+    }
+    return -1;
+}
+
 std::vector<HeavyBodyDesc> buildHeavyBodies() {
     std::vector<HeavyBodyDesc> h;
     h.reserve(64);

@@ -50,8 +50,11 @@ struct ParticleSet {
 
 uint32_t packRGBA(float r, float g, float b, float a);
 
-// Sun, 8 planets, major moons, and 6 dwarf planets with physical IAU/JPL radii & Keplerian states.
+// Sun, 8 planets, major moons, dwarf planets, Centaurs, NEAs, comets & 1I/'Oumuamua (J2000.0 epoch).
 std::vector<HeavyBodyDesc> buildHeavyBodies();
+
+// Finds a heavy body's index by exact name, returning -1 if not found.
+int findBodyIndex(const std::vector<HeavyBodyDesc>& descs, const char* name);
 
 // Main asteroid belt (2.06-3.35 AU) + Classical Kuiper Belt (30.0-47.8 AU) & Scattered Disk (47.8-68.0 AU).
 ParticleSet buildParticles(size_t numAsteroids, size_t numKBOs, uint64_t seed = 42);

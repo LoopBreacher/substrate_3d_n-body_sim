@@ -845,7 +845,7 @@ void drawTelemetryWindow(TelemetryUIState& ui,
             ImGui::Separator();
             ImGui::TextColored(ImVec4(0.0f, 0.88f, 1.0f, 1.0f),
                                "Symplectic 4th-Order PEFRL + Kahan Conservation Audit");
-            const double curE = engine.newtonianEnergy(snap);
+            const double curE = engine.newtonianEnergy(snap, stepParams.relativistic);
             const double curL = engine.angularMomentumMag(snap);
             const double vBary = engine.barycenterDriftSpeed(snap);
             const float latestE = ui.conservation.relEnergyDrift.empty()
@@ -881,14 +881,18 @@ void drawTelemetryWindow(TelemetryUIState& ui,
         // TAB 3: BELT STATISTICAL MECHANICS & RESONANCES (Zero-Readback GPU)
         // ===================================================================
         if (ImGui::BeginTabItem("3. Belt Resonances (GPU)")) {
-            // Compute live semi-major axes of Jupiter (idx 8) & Neptune (idx 16) for dynamic resonance markers
-            const KeplerElements jupK = computeKeplerElements(8, 0, snap, engine);
-            const KeplerElements nepK = computeKeplerElements(16, 0, snap, engine);
+            // Compute live semi-major axes of Jupiter & Neptune dynamically by name for resonance markers
+            const int sunIdx = std::max(0, findBodyIndex(heavyDescs, "Sun"));
+            const int jupIdx = findBodyIndex(heavyDescs, "Jupiter");
+            const int nepIdx = findBodyIndex(heavyDescs, "Neptune");
+            const KeplerElements jupK = (jupIdx >= 0) ? computeKeplerElements(jupIdx, sunIdx, snap, engine) : KeplerElements{};
+            const KeplerElements nepK = (nepIdx >= 0) ? computeKeplerElements(nepIdx, sunIdx, snap, engine) : KeplerElements{};
             const double aJup = (jupK.bound && jupK.a_AU > 0.1) ? jupK.a_AU : 5.202887;
             const double aNep = (nepK.bound && nepK.a_AU > 1.0) ? nepK.a_AU : 30.069923;
 
-            if (ui.beltStatsFrameCounter++ % 15 == 0) {
-                engine.computeBeltStats(ui.beltStats, aJup);
+            engine.pollBeltStats(ui.beltStats);
+            if (!engine.beltStatsPending() && (ui.beltStatsFrameCounter++ % 15 == 0)) {
+                engine.requestBeltStats(aJup);
             }
 
             const BeltStats& bs = ui.beltStats;
@@ -990,13 +994,13 @@ void drawTelemetryWindow(TelemetryUIState& ui,
             if (ImGui::Checkbox("Enable Live Node-Density Override on Target", &overridden)) {
                 const double rho = std::pow(10.0, static_cast<double>(ui.sandboxLog10Rho));
                 engine.setDensityOverride(targetIdx, overridden, rho, stepParams.relativistic);
-                ui.conservation.reset(engine.newtonianEnergy(snap), engine.angularMomentumMag(snap));
+                ui.conservation.reset(engine.newtonianEnergy(snap, stepParams.relativistic), engine.angularMomentumMag(snap));
             }
 
             if (ImGui::SliderFloat("log10(rho_N) [nodes/m^3]", &ui.sandboxLog10Rho, -2.0f, 32.0f, "%.2f")) {
                 const double rho = std::pow(10.0, static_cast<double>(ui.sandboxLog10Rho));
                 engine.setDensityOverride(targetIdx, true, rho, stepParams.relativistic);
-                ui.conservation.reset(engine.newtonianEnergy(snap), engine.angularMomentumMag(snap));
+                ui.conservation.reset(engine.newtonianEnergy(snap, stepParams.relativistic), engine.angularMomentumMag(snap));
             }
 
             // Visual threshold gauge
@@ -1024,25 +1028,25 @@ void drawTelemetryWindow(TelemetryUIState& ui,
             if (ImGui::Button("Decompile -> I-Phase (1.2 nodes/m^3, Theta = 0)")) {
                 ui.sandboxLog10Rho = std::log10(1.2f);
                 engine.setDensityOverride(targetIdx, true, 1.2, stepParams.relativistic);
-                ui.conservation.reset(engine.newtonianEnergy(snap), engine.angularMomentumMag(snap));
+                ui.conservation.reset(engine.newtonianEnergy(snap, stepParams.relativistic), engine.angularMomentumMag(snap));
             }
             ImGui::SameLine();
             if (ImGui::Button("Compile Edge (4.5 nodes/m^3, Theta = 1)")) {
                 ui.sandboxLog10Rho = std::log10(4.5f);
                 engine.setDensityOverride(targetIdx, true, 4.5, stepParams.relativistic);
-                ui.conservation.reset(engine.newtonianEnergy(snap), engine.angularMomentumMag(snap));
+                ui.conservation.reset(engine.newtonianEnergy(snap, stepParams.relativistic), engine.angularMomentumMag(snap));
             }
 
             if (ImGui::Button("Restore Physical Gamma-Knot Density")) {
                 engine.setDensityOverride(targetIdx, false, engine.baseDensity(targetIdx), stepParams.relativistic);
                 ui.sandboxLog10Rho = static_cast<float>(std::log10(engine.baseDensity(targetIdx)));
-                ui.conservation.reset(engine.newtonianEnergy(snap), engine.angularMomentumMag(snap));
+                ui.conservation.reset(engine.newtonianEnergy(snap, stepParams.relativistic), engine.angularMomentumMag(snap));
             }
             ImGui::SameLine();
             if (ImGui::Button("Reset All Overrides")) {
                 engine.resetDensityOverrides(stepParams.relativistic);
                 ui.sandboxLog10Rho = static_cast<float>(std::log10(engine.baseDensity(targetIdx)));
-                ui.conservation.reset(engine.newtonianEnergy(snap), engine.angularMomentumMag(snap));
+                ui.conservation.reset(engine.newtonianEnergy(snap, stepParams.relativistic), engine.angularMomentumMag(snap));
             }
 
             ImGui::Spacing();

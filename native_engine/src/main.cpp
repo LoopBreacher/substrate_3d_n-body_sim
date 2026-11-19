@@ -150,25 +150,39 @@ int runBenchmarkSuite() {
         engine.load(heavy, particles, true);
         engine.requestSnapshot();
         const auto s0 = engine.snapshot();
-        const double E0 = engine.newtonianEnergy(s0);
+
+        StepParams sp;
+        sp.dtSeconds = 21600.0;
+        sp.substeps = 20;
+        sp.relativistic = true;
+        sp.precision = Precision::FP64;
+
+        const double E0 = engine.newtonianEnergy(s0, sp.relativistic);
         const double L0 = engine.angularMomentumMag(s0);
 
-        // Earth = 3, Mercury = 1, Sun = 0, Jupiter = 8, Saturn = 13
-        const auto earthKep0  = computeKeplerElements(3, 0, s0, engine);
-        const auto earthDom0  = computeDomainRadii(3, 0, heavy, earthKep0, engine);
-        const auto earthAud   = computeSubstrateAudit(3, 0, s0, earthKep0, engine, true);
-        const auto mercKep0   = computeKeplerElements(1, 0, s0, engine);
-        const auto mercAud    = computeSubstrateAudit(1, 0, s0, mercKep0, engine, true);
-        const auto jupKep0    = computeKeplerElements(8, 0, s0, engine);
-        const auto jupAud     = computeSubstrateAudit(8, 0, s0, jupKep0, engine, true);
-        const auto satKep0    = computeKeplerElements(13, 0, s0, engine);
-        const auto satAud     = computeSubstrateAudit(13, 0, s0, satKep0, engine, true);
-        // Phobos = 6, Mars = 5; 1I/'Oumuamua = 54; Titan = 14, Saturn = 13
-        const auto phobosKep  = computeKeplerElements(6, 5, s0, engine);
-        const auto phobosDom  = computeDomainRadii(6, 5, heavy, phobosKep, engine);
-        const auto phobosAud  = computeSubstrateAudit(6, 5, s0, phobosKep, engine, true);
-        const auto oumuamuaK  = computeKeplerElements(54, 0, s0, engine);
-        const auto jupLP      = computeLagrangePoints(8, 0, s0, engine);
+        const int idxSun      = findBodyIndex(heavy, "Sun");
+        const int idxMercury  = findBodyIndex(heavy, "Mercury");
+        const int idxEarth    = findBodyIndex(heavy, "Earth");
+        const int idxMars     = findBodyIndex(heavy, "Mars");
+        const int idxPhobos   = findBodyIndex(heavy, "Phobos");
+        const int idxJupiter  = findBodyIndex(heavy, "Jupiter");
+        const int idxSaturn   = findBodyIndex(heavy, "Saturn");
+        const int idxOumuamua = findBodyIndex(heavy, "1I/'Oumuamua");
+
+        const auto earthKep0  = computeKeplerElements(idxEarth, idxSun, s0, engine);
+        const auto earthDom0  = computeDomainRadii(idxEarth, idxSun, heavy, earthKep0, engine);
+        const auto earthAud   = computeSubstrateAudit(idxEarth, idxSun, s0, earthKep0, engine, sp.relativistic);
+        const auto mercKep0   = computeKeplerElements(idxMercury, idxSun, s0, engine);
+        const auto mercAud    = computeSubstrateAudit(idxMercury, idxSun, s0, mercKep0, engine, sp.relativistic);
+        const auto jupKep0    = computeKeplerElements(idxJupiter, idxSun, s0, engine);
+        const auto jupAud     = computeSubstrateAudit(idxJupiter, idxSun, s0, jupKep0, engine, sp.relativistic);
+        const auto satKep0    = computeKeplerElements(idxSaturn, idxSun, s0, engine);
+        const auto satAud     = computeSubstrateAudit(idxSaturn, idxSun, s0, satKep0, engine, sp.relativistic);
+        const auto phobosKep  = computeKeplerElements(idxPhobos, idxMars, s0, engine);
+        const auto phobosDom  = computeDomainRadii(idxPhobos, idxMars, heavy, phobosKep, engine);
+        const auto phobosAud  = computeSubstrateAudit(idxPhobos, idxMars, s0, phobosKep, engine, sp.relativistic);
+        const auto oumuamuaK  = computeKeplerElements(idxOumuamua, idxSun, s0, engine);
+        const auto jupLP      = computeLagrangePoints(idxJupiter, idxSun, s0, engine);
 
         const double rGravAU     = engine.gravitationalFloorAU();
         const double rOortCoreAU = engine.outerOortStagnationAU();
@@ -228,10 +242,10 @@ int runBenchmarkSuite() {
         std::printf("  1I/'Oumuamua Hyperbolic State     : r = %.3f AU, e = %.5f (%s), v = %.2f km/s\n",
                     oumuamuaK.r_m / AU, oumuamuaK.e, oumuamuaK.bound ? "BOUND" : "HYPERBOLIC",
                     oumuamuaK.v_ms / 1000.0);
-        if (jupLP.valid) {
-            const double dx1 = jupLP.pos_m[0][0] - s0.pos[8 * 3 + 0];
-            const double dy1 = jupLP.pos_m[0][1] - s0.pos[8 * 3 + 1];
-            const double dz1 = jupLP.pos_m[0][2] - s0.pos[8 * 3 + 2];
+        if (jupLP.valid && idxJupiter >= 0) {
+            const double dx1 = jupLP.pos_m[0][0] - s0.pos[idxJupiter * 3 + 0];
+            const double dy1 = jupLP.pos_m[0][1] - s0.pos[idxJupiter * 3 + 1];
+            const double dz1 = jupLP.pos_m[0][2] - s0.pos[idxJupiter * 3 + 2];
             const double dJupL1_AU = std::sqrt(dx1 * dx1 + dy1 * dy1 + dz1 * dz1) / AU;
             std::printf("  Sun-Jupiter Emergent L1 Distance  : %.5f AU from Jupiter (alpha = %.6e)\n\n",
                         dJupL1_AU, jupLP.alpha);
@@ -239,26 +253,21 @@ int runBenchmarkSuite() {
             std::printf("\n");
         }
 
-        StepParams sp;
-        sp.dtSeconds = 21600.0;
-        sp.substeps = 20;
-        sp.relativistic = true;
-        sp.precision = Precision::FP64;
-
         for (int i = 0; i < 365 * 4 + 1; ++i) {  // 1 Julian year (365.25 days)
             engine.step(sp, i == 365 * 4);
         }
         const auto s1 = engine.snapshot();
-        const double E1 = engine.newtonianEnergy(s1);
+        const double E1 = engine.newtonianEnergy(s1, sp.relativistic);
         const double L1 = engine.angularMomentumMag(s1);
         const double relEDrift = std::abs((E1 - E0) / E0);
         const double relLDrift = std::abs((L1 - L0) / L0);
-        const auto earthKep1  = computeKeplerElements(3, 0, s1, engine);
-        const auto phobosKep1 = computeKeplerElements(6, 5, s1, engine);
+        const auto earthKep1  = computeKeplerElements(idxEarth, idxSun, s1, engine);
+        const auto phobosKep1 = computeKeplerElements(idxPhobos, idxMars, s1, engine);
 
-        // Verify GPU BeltStats kernel
+        // Verify GPU BeltStats kernel using Jupiter's live semi-major axis
         BeltStats bs{};
-        engine.computeBeltStats(bs, 5.202887);
+        const double aJupBench = (jupKep0.bound && jupKep0.a_AU > 0.1) ? jupKep0.a_AU : 5.202887;
+        engine.computeBeltStats(bs, aJupBench);
 
         std::printf("[Physics Verification - 1 Julian Year (4th-Order PEFRL + Kahan, substeps=20)]\n");
         std::printf("  Earth Semi-Major Axis  : %.6f AU (initial %.6f AU, e = %.5f)\n",
@@ -282,15 +291,15 @@ int runBenchmarkSuite() {
             engine.step(spExtreme, i == 182);
         }
         const auto sExtreme = engine.snapshot();
-        const auto phobosExtreme = computeKeplerElements(6, 5, sExtreme, engine);
+        const auto phobosExtreme = computeKeplerElements(idxPhobos, idxMars, sExtreme, engine);
 
         // GC Sandbox Unbinding Check at Macro dt = 48.0 h, substeps = 1: Decompile Mars (rho_N = 1.0 < 4.0)
-        engine.setDensityOverride(5, true, 1.0, true);
+        engine.setDensityOverride(idxMars, true, 1.0, true);
         engine.step(spExtreme, true);
         const auto sDecomp = engine.snapshot();
-        const double dxP = sDecomp.pos[6 * 3 + 0] - sDecomp.pos[5 * 3 + 0];
-        const double dyP = sDecomp.pos[6 * 3 + 1] - sDecomp.pos[5 * 3 + 1];
-        const double dzP = sDecomp.pos[6 * 3 + 2] - sDecomp.pos[5 * 3 + 2];
+        const double dxP = sDecomp.pos[idxPhobos * 3 + 0] - sDecomp.pos[idxMars * 3 + 0];
+        const double dyP = sDecomp.pos[idxPhobos * 3 + 1] - sDecomp.pos[idxMars * 3 + 1];
+        const double dzP = sDecomp.pos[idxPhobos * 3 + 2] - sDecomp.pos[idxMars * 3 + 2];
         const double rPhobosAfterDecompKm = std::sqrt(dxP * dxP + dyP * dyP + dzP * dzP) / 1000.0;
 
         std::printf("[CFL Dynamical Frequency Subdivision Torture Test (dt = 48.0 h, substeps = 1)]\n");
@@ -450,6 +459,12 @@ int main(int argc, char** argv) {
 
     TelemetryUIState telemetryUI;
 
+    StepParams stepParams;
+    stepParams.dtSeconds = 21600.0;
+    stepParams.substeps = 20;
+    stepParams.relativistic = true;
+    stepParams.precision = Precision::Mixed;
+
     size_t activeParticleCount = initialParticles;
     auto reloadPayload = [&](size_t numParticles) {
         activeParticleCount = numParticles;
@@ -459,7 +474,8 @@ int main(int argc, char** argv) {
         for (auto& dq : relTrailsAU) dq.clear();
         engine.requestSnapshot();
         const auto& s0 = engine.snapshot();
-        telemetryUI.conservation.reset(engine.newtonianEnergy(s0), engine.angularMomentumMag(s0));
+        telemetryUI.conservation.reset(engine.newtonianEnergy(s0, stepParams.relativistic),
+                                       engine.angularMomentumMag(s0));
     };
     reloadPayload(initialParticles);
 
@@ -467,12 +483,6 @@ int main(int argc, char** argv) {
     MouseState mouseState{&camera, 0.0, 0.0};
     glfwSetWindowUserPointer(window, &mouseState);
     glfwSetScrollCallback(window, scrollCallback);
-
-    StepParams stepParams;
-    stepParams.dtSeconds = 21600.0;
-    stepParams.substeps = 20;
-    stepParams.relativistic = true;
-    stepParams.precision = Precision::Mixed;
 
     RenderSettings renderSettings;
     renderSettings.terminationShockRadiusAU = static_cast<float>(engine.terminationShockRadiusAU());
@@ -482,7 +492,7 @@ int main(int argc, char** argv) {
     bool isPaused = false;
     bool showLabels = true;
     int stepsPerFrame = 2;
-    int targetIdx = 3;  // Earth by default (highlights Paper 1 Sec. 3 & Sec. 8 benchmarks immediately!)
+    int targetIdx = std::max(0, findBodyIndex(heavyDescs, "Earth"));  // Earth by default (highlights Paper 1 Sec. 3 & Sec. 8 benchmarks immediately!)
 
     const size_t scalePresets[] = {3000, 25000, 100000, 250000, 500000, 1000000, 1500000};
     const char* scaleLabels[] = {
@@ -571,7 +581,7 @@ int main(int argc, char** argv) {
         const HeavySnapshot& snap = engine.snapshot();
 
         if (!isPaused && (++conservationSampleCounter % 6 == 0)) {
-            telemetryUI.conservation.push(engine.newtonianEnergy(snap),
+            telemetryUI.conservation.push(engine.newtonianEnergy(snap, stepParams.relativistic),
                                           engine.angularMomentumMag(snap));
         }
 
@@ -984,7 +994,10 @@ int main(int argc, char** argv) {
                     stepParams.precision = Precision::FP64;
                 }
 
-                ImGui::Checkbox("1PN Relativistic Precession", &stepParams.relativistic);
+                if (ImGui::Checkbox("1PN Relativistic Precession", &stepParams.relativistic)) {
+                    telemetryUI.conservation.reset(engine.newtonianEnergy(snap, stepParams.relativistic),
+                                                   engine.angularMomentumMag(snap));
+                }
                 ImGui::SliderInt("Macro Steps / Frame", &stepsPerFrame, 1, 12);
 
                 float dtHours = static_cast<float>(stepParams.dtSeconds / 3600.0);

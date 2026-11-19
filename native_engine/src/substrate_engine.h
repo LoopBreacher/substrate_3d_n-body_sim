@@ -80,6 +80,9 @@ public:
 
     // Computes binned semi-major axis, eccentricity, and Tisserand stats directly on GPU.
     void computeBeltStats(BeltStats& out, double jupiterSemiMajorAU = 5.202887);
+    void requestBeltStats(double jupiterSemiMajorAU = 5.202887);
+    bool pollBeltStats(BeltStats& out); // Non-blocking: unpacks and returns true when GPU event finishes
+    bool beltStatsPending() const { return m_beltPending; }
 
     void beginTimer();
     void endTimer();
@@ -116,7 +119,7 @@ public:
                                               double swSpeedKms = 440.0,
                                               double heliosheathStagnationFactor = 1.35);
 
-    double newtonianEnergy(const HeavySnapshot& s) const;      // heavy system, J
+    double newtonianEnergy(const HeavySnapshot& s, bool relativistic = true) const; // heavy system, J
     double angularMomentumMag(const HeavySnapshot& s) const;   // heavy system |L|, kg*m^2/s
     double barycenterDriftSpeed(const HeavySnapshot& s) const; // |V_cm|, m/s
 
@@ -126,9 +129,11 @@ private:
 
     cudaStream_t m_stream = nullptr;
     cudaEvent_t m_snapEvent = nullptr;
+    cudaEvent_t m_beltEvent = nullptr;
     cudaEvent_t m_timerStart = nullptr;
     cudaEvent_t m_timerStop = nullptr;
     bool m_snapPending = false;
+    bool m_beltPending = false;
     bool m_timerPending = false;
     float m_lastTimedMs = 0.0f;
 
@@ -149,6 +154,8 @@ private:
     // Device & pinned buffers for zero-readback GPU belt histograms (~1 KB)
     uint32_t* d_beltBins = nullptr;
     float* d_beltSums = nullptr;
+    uint32_t* h_beltBinsPinned = nullptr;
+    float* h_beltSumsPinned = nullptr;
 
     double* h_snapPinned = nullptr;
     HeavySnapshot m_snapshot;

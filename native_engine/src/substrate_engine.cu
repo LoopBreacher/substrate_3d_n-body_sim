@@ -28,6 +28,7 @@ namespace substrate {
 namespace {
 
 constexpr int PARTICLE_BLOCK         = 256;
+constexpr int HEAVY_THREADS_PER_BODY = 8;
 constexpr double INV_AU = 1.0 / AU;
 constexpr float MIN_D2_AU = static_cast<float>((1.0 / AU) * (1.0 / AU));  // 1 m clamp, in AU^2
 constexpr double J2_GATE_D2_M2 = (0.01 * AU) * (0.01 * AU);               // 0.01 AU (~1.5M km) sub-mantissa particle J2 gate
@@ -60,71 +61,91 @@ __device__ __forceinline__ void kahanAdd(double& sum, double& comp, double delta
 }
 
 // ---------------------------------------------------------------------------
-// Heavy bodies: fully coupled FP64, one block, one thread per body.
+// Heavy bodies: fully coupled FP64, one block, 8-way warp-cooperative per body.
+// All __shfl_down_sync calls execute unconditionally across full 32-thread warps.
 // ---------------------------------------------------------------------------
-__device__ __forceinline__ void heavyAccel(int i, double x, double y, double z,
-                                           const double* sx, const double* sy, const double* sz,
-                                           const double* smu, const double* src,
-                                           const double* sj2R2,
-                                           const double* sSpinX, const double* sSpinY, const double* sSpinZ,
-                                           int parentIdx, uint64_t moonMask,
-                                           int M, double& ax, double& ay, double& az) {
-    ax = ay = az = 0.0;
-    #pragma unroll 4
-    for (int j = 0; j < M; ++j) {
-        if (j == i) continue;
-        const double dx = sx[j] - x, dy = sy[j] - y, dz = sz[j] - z;
-        const double d2 = fma(dx, dx, fma(dy, dy, dz * dz));
-        const double inv = rsqrt(fmax(d2, 1.0));
-        const double g = smu[j] * inv * inv * (1.0 + src[j] * inv);
-        const double s = g * inv;
-        ax = fma(s, dx, ax);
-        ay = fma(s, dy, ay);
-        az = fma(s, dz, az);
-    }
-
-    // 1. O(1) Parent Quadrupole J2 evaluation outside the O(M) monopole+1PN loop (zero inner-loop divergence):
-    if (parentIdx > 0) {
-        const double j2r2_p = sj2R2[parentIdx];
-        const double mp = smu[parentIdx];
-        if (j2r2_p > 0.0 && mp > 0.0) {
-            const double dx = sx[parentIdx] - x, dy = sy[parentIdx] - y, dz = sz[parentIdx] - z;
+__device__ __forceinline__ void heavyAccelCoop8(int bodyIdx, int lane, bool validBody,
+                                                double x, double y, double z,
+                                                const double* sx, const double* sy, const double* sz,
+                                                const double* smu, const double* src,
+                                                const double* sj2R2,
+                                                const double* sSpinX, const double* sSpinY, const double* sSpinZ,
+                                                int parentIdx, uint64_t moonMask,
+                                                int M, double& ax, double& ay, double& az) {
+    double lx = 0.0, ly = 0.0, lz = 0.0;
+    if (validBody) {
+        const double rc_i = src[bodyIdx];
+        #pragma unroll 4
+        for (int j = lane; j < M; j += HEAVY_THREADS_PER_BODY) {
+            if (j == bodyIdx) continue;
+            const double dx = sx[j] - x, dy = sy[j] - y, dz = sz[j] - z;
             const double d2 = fma(dx, dx, fma(dy, dy, dz * dz));
             const double inv = rsqrt(fmax(d2, 1.0));
-            const double inv2 = inv * inv;
-            const double spX = sSpinX[parentIdx], spY = sSpinY[parentIdx], spZ = sSpinZ[parentIdx];
-            const double rDotS = (-dx * spX - dy * spY - dz * spZ) * inv;
-            const double baseQ = 1.5 * mp * j2r2_p * inv2 * inv2;
-            const double coeff = baseQ * inv * (1.0 - 5.0 * rDotS * rDotS);
-            const double pole  = -2.0 * rDotS * baseQ;
-            ax = fma(coeff, dx, fma(pole, spX, ax));
-            ay = fma(coeff, dy, fma(pole, spY, ay));
-            az = fma(coeff, dz, fma(pole, spZ, az));
+            const double rcPair = rc_i + src[j];
+            const double g = smu[j] * inv * inv * (1.0 + rcPair * inv);
+            const double s = g * inv;
+            lx = fma(s, dx, lx);
+            ly = fma(s, dy, ly);
+            lz = fma(s, dz, lz);
         }
     }
 
-    // 2. Exact Newton's 3rd Law J2 reaction force on parent planet i from its moons (via 64-bit moon bitmask):
-    if (moonMask != 0ULL) {
-        const double j2r2_i = sj2R2[i];
-        if (j2r2_i > 0.0 && smu[i] > 0.0) {
-            const double spX = sSpinX[i], spY = sSpinY[i], spZ = sSpinZ[i];
-            for (unsigned long long mask = moonMask; mask != 0ULL; mask &= (mask - 1ULL)) {
-                const int m = __ffsll(static_cast<long long>(mask)) - 1;
-                const double mm = smu[m];
-                if (mm <= 0.0) continue;
-                const double dx = sx[m] - x, dy = sy[m] - y, dz = sz[m] - z;
+    // Unconditional 8-way sub-warp reduction (strict Volta+/Blackwell full-warp safety)
+    #pragma unroll
+    for (int offset = HEAVY_THREADS_PER_BODY / 2; offset > 0; offset >>= 1) {
+        lx += __shfl_down_sync(0xFFFFFFFFu, lx, offset, HEAVY_THREADS_PER_BODY);
+        ly += __shfl_down_sync(0xFFFFFFFFu, ly, offset, HEAVY_THREADS_PER_BODY);
+        lz += __shfl_down_sync(0xFFFFFFFFu, lz, offset, HEAVY_THREADS_PER_BODY);
+    }
+
+    if (validBody && lane == 0) {
+        // 1. O(1) Parent Quadrupole J2 evaluation outside the O(M) monopole+1PN loop (zero inner-loop divergence):
+        if (parentIdx > 0) {
+            const double j2r2_p = sj2R2[parentIdx];
+            const double mp = smu[parentIdx];
+            if (j2r2_p > 0.0 && mp > 0.0) {
+                const double dx = sx[parentIdx] - x, dy = sy[parentIdx] - y, dz = sz[parentIdx] - z;
                 const double d2 = fma(dx, dx, fma(dy, dy, dz * dz));
                 const double inv = rsqrt(fmax(d2, 1.0));
                 const double inv2 = inv * inv;
-                const double rDotS = (dx * spX + dy * spY + dz * spZ) * inv;
-                const double baseQ = 1.5 * mm * j2r2_i * inv2 * inv2;
+                const double spX = sSpinX[parentIdx], spY = sSpinY[parentIdx], spZ = sSpinZ[parentIdx];
+                const double rDotS = (-dx * spX - dy * spY - dz * spZ) * inv;
+                const double baseQ = 1.5 * mp * j2r2_p * inv2 * inv2;
                 const double coeff = baseQ * inv * (1.0 - 5.0 * rDotS * rDotS);
-                const double pole  = 2.0 * rDotS * baseQ;
-                ax = fma(coeff, dx, fma(pole, spX, ax));
-                ay = fma(coeff, dy, fma(pole, spY, ay));
-                az = fma(coeff, dz, fma(pole, spZ, az));
+                const double pole  = -2.0 * rDotS * baseQ;
+                lx = fma(coeff, dx, fma(pole, spX, lx));
+                ly = fma(coeff, dy, fma(pole, spY, ly));
+                lz = fma(coeff, dz, fma(pole, spZ, lz));
             }
         }
+
+        // 2. Exact Newton's 3rd Law J2 reaction force on parent planet bodyIdx from its moons (via 64-bit moon bitmask):
+        if (moonMask != 0ULL) {
+            const double j2r2_i = sj2R2[bodyIdx];
+            if (j2r2_i > 0.0 && smu[bodyIdx] > 0.0) {
+                const double spX = sSpinX[bodyIdx], spY = sSpinY[bodyIdx], spZ = sSpinZ[bodyIdx];
+                for (unsigned long long mask = moonMask; mask != 0ULL; mask &= (mask - 1ULL)) {
+                    const int m = __ffsll(static_cast<long long>(mask)) - 1;
+                    const double mm = smu[m];
+                    if (mm <= 0.0) continue;
+                    const double dx = sx[m] - x, dy = sy[m] - y, dz = sz[m] - z;
+                    const double d2 = fma(dx, dx, fma(dy, dy, dz * dz));
+                    const double inv = rsqrt(fmax(d2, 1.0));
+                    const double inv2 = inv * inv;
+                    const double rDotS = (dx * spX + dy * spY + dz * spZ) * inv;
+                    const double baseQ = 1.5 * mm * j2r2_i * inv2 * inv2;
+                    const double coeff = baseQ * inv * (1.0 - 5.0 * rDotS * rDotS);
+                    const double pole  = 2.0 * rDotS * baseQ;
+                    lx = fma(coeff, dx, fma(pole, spX, lx));
+                    ly = fma(coeff, dy, fma(pole, spY, ly));
+                    lz = fma(coeff, dz, fma(pole, spZ, lz));
+                }
+            }
+        }
+
+        ax = lx;
+        ay = ly;
+        az = lz;
     }
 }
 
@@ -134,29 +155,39 @@ __global__ void heavyInitAccKernel(double* __restrict__ st, const double* __rest
                                    const uint64_t* __restrict__ moonMask, int M, bool rel) {
     __shared__ double sx[MAX_HEAVY], sy[MAX_HEAVY], sz[MAX_HEAVY], smu[MAX_HEAVY], src[MAX_HEAVY];
     __shared__ double sj2R2[MAX_HEAVY], sSpinX[MAX_HEAVY], sSpinY[MAX_HEAVY], sSpinZ[MAX_HEAVY];
-    const int i = threadIdx.x;
+    const int bodyIdx = threadIdx.x / HEAVY_THREADS_PER_BODY;
+    const int lane    = threadIdx.x % HEAVY_THREADS_PER_BODY;
+    const bool validBody = (bodyIdx < M);
+    const bool isLeader  = (validBody && lane == 0);
+
     int pIdx = -1;
     uint64_t mMask = 0ULL;
-    if (i < M) {
-        sx[i] = st[i];
-        sy[i] = st[M + i];
-        sz[i] = st[2 * M + i];
-        smu[i] = mu[i];
-        src[i] = (rel && mu[i] > 0.0) ? rc[i] : 0.0;
-        sj2R2[i] = (mu[i] > 0.0) ? j2R2[i] : 0.0;
-        sSpinX[i] = spinAxis[i];
-        sSpinY[i] = spinAxis[M + i];
-        sSpinZ[i] = spinAxis[2 * M + i];
-        pIdx = parentIdx[i];
-        mMask = moonMask[i];
+    if (isLeader) {
+        sx[bodyIdx] = st[bodyIdx];
+        sy[bodyIdx] = st[M + bodyIdx];
+        sz[bodyIdx] = st[2 * M + bodyIdx];
+        smu[bodyIdx] = mu[bodyIdx];
+        src[bodyIdx] = (rel && mu[bodyIdx] > 0.0) ? rc[bodyIdx] : 0.0;
+        sj2R2[bodyIdx] = (mu[bodyIdx] > 0.0) ? j2R2[bodyIdx] : 0.0;
+        sSpinX[bodyIdx] = spinAxis[bodyIdx];
+        sSpinY[bodyIdx] = spinAxis[M + bodyIdx];
+        sSpinZ[bodyIdx] = spinAxis[2 * M + bodyIdx];
+        pIdx = parentIdx[bodyIdx];
+        mMask = moonMask[bodyIdx];
     }
     __syncthreads();
-    if (i < M) {
-        double ax, ay, az;
-        heavyAccel(i, sx[i], sy[i], sz[i], sx, sy, sz, smu, src, sj2R2, sSpinX, sSpinY, sSpinZ, pIdx, mMask, M, ax, ay, az);
-        st[6 * M + i] = ax;
-        st[7 * M + i] = ay;
-        st[8 * M + i] = az;
+
+    const double bx = validBody ? sx[bodyIdx] : 0.0;
+    const double by = validBody ? sy[bodyIdx] : 0.0;
+    const double bz = validBody ? sz[bodyIdx] : 0.0;
+    double ax = 0.0, ay = 0.0, az = 0.0;
+    heavyAccelCoop8(bodyIdx, lane, validBody, bx, by, bz,
+                    sx, sy, sz, smu, src, sj2R2, sSpinX, sSpinY, sSpinZ,
+                    pIdx, mMask, M, ax, ay, az);
+    if (isLeader) {
+        st[6 * M + bodyIdx] = ax;
+        st[7 * M + bodyIdx] = ay;
+        st[8 * M + bodyIdx] = az;
     }
 }
 
@@ -170,8 +201,10 @@ __global__ void heavySubstepKernel(double* __restrict__ st, const double* __rest
     __shared__ double sMaxOmega2[MAX_HEAVY];
     __shared__ int sEffectiveSubsteps;
 
-    const int i = threadIdx.x;
-    const bool active = i < M;
+    const int bodyIdx = threadIdx.x / HEAVY_THREADS_PER_BODY;
+    const int lane    = threadIdx.x % HEAVY_THREADS_PER_BODY;
+    const bool validBody = (bodyIdx < M);
+    const bool isLeader  = (validBody && lane == 0);
     const double macroDt = dt * static_cast<double>(substeps);
 
     double x = 0.0, y = 0.0, z = 0.0;
@@ -183,45 +216,55 @@ __global__ void heavySubstepKernel(double* __restrict__ st, const double* __rest
     int pIdx = -1;
     uint64_t mMask = 0ULL;
 
-    if (active) {
-        x = st[i];          y = st[M + i];      z = st[2 * M + i];
-        vx = st[3 * M + i]; vy = st[4 * M + i]; vz = st[5 * M + i];
-        ax = st[6 * M + i]; ay = st[7 * M + i]; az = st[8 * M + i];
-        sx[i] = x;
-        sy[i] = y;
-        sz[i] = z;
-        smu[i] = mu[i];
-        src[i] = (rel && mu[i] > 0.0) ? rc[i] : 0.0;
-        sj2R2[i] = (mu[i] > 0.0) ? j2R2[i] : 0.0;
-        sSpinX[i] = spinAxis[i];
-        sSpinY[i] = spinAxis[M + i];
-        sSpinZ[i] = spinAxis[2 * M + i];
-        pIdx = parentIdx[i];
-        mMask = moonMask[i];
+    if (isLeader) {
+        x = st[bodyIdx];          y = st[M + bodyIdx];      z = st[2 * M + bodyIdx];
+        vx = st[3 * M + bodyIdx]; vy = st[4 * M + bodyIdx]; vz = st[5 * M + bodyIdx];
+        ax = st[6 * M + bodyIdx]; ay = st[7 * M + bodyIdx]; az = st[8 * M + bodyIdx];
+        sx[bodyIdx] = x;
+        sy[bodyIdx] = y;
+        sz[bodyIdx] = z;
+        smu[bodyIdx] = mu[bodyIdx];
+        src[bodyIdx] = (rel && mu[bodyIdx] > 0.0) ? rc[bodyIdx] : 0.0;
+        sj2R2[bodyIdx] = (mu[bodyIdx] > 0.0) ? j2R2[bodyIdx] : 0.0;
+        sSpinX[bodyIdx] = spinAxis[bodyIdx];
+        sSpinY[bodyIdx] = spinAxis[M + bodyIdx];
+        sSpinZ[bodyIdx] = spinAxis[2 * M + bodyIdx];
+        pIdx = parentIdx[bodyIdx];
+        mMask = moonMask[bodyIdx];
     }
     __syncthreads();
 
-    // Instantaneous Courant-Friedrichs-Lewy (CFL) dynamical orbital-frequency subdivision:
+    // Instantaneous Courant-Friedrichs-Lewy (CFL) dynamical orbital-frequency subdivision (8-way parallel):
     double localMaxOmega2 = 0.0;
-    if (active) {
-        const double mui = smu[i];
-        for (int j = 0; j < M; ++j) {
-            if (j == i) continue;
+    if (validBody) {
+        const double bx = sx[bodyIdx];
+        const double by = sy[bodyIdx];
+        const double bz = sz[bodyIdx];
+        const double mui = smu[bodyIdx];
+        for (int j = lane; j < M; j += HEAVY_THREADS_PER_BODY) {
+            if (j == bodyIdx) continue;
             const double muPair = mui + smu[j];
             if (muPair <= 0.0) continue;
-            const double dx = sx[j] - x;
-            const double dy = sy[j] - y;
-            const double dz = sz[j] - z;
+            const double dx = sx[j] - bx;
+            const double dy = sy[j] - by;
+            const double dz = sz[j] - bz;
             const double d2 = fmax(fma(dx, dx, fma(dy, dy, dz * dz)), 1.0);
             const double invR = rsqrt(d2);
             const double omega2 = muPair * invR * invR * invR;
             localMaxOmega2 = fmax(localMaxOmega2, omega2);
         }
     }
-    sMaxOmega2[i] = localMaxOmega2;
+    #pragma unroll
+    for (int offset = HEAVY_THREADS_PER_BODY / 2; offset > 0; offset >>= 1) {
+        const double other = __shfl_down_sync(0xFFFFFFFFu, localMaxOmega2, offset, HEAVY_THREADS_PER_BODY);
+        localMaxOmega2 = fmax(localMaxOmega2, other);
+    }
+    if (isLeader) {
+        sMaxOmega2[bodyIdx] = localMaxOmega2;
+    }
     __syncthreads();
 
-    if (i == 0) {
+    if (threadIdx.x == 0) {
         double sysMaxOmega2 = 0.0;
         for (int j = 0; j < M; ++j) {
             sysMaxOmega2 = fmax(sysMaxOmega2, sMaxOmega2[j]);
@@ -246,7 +289,7 @@ __global__ void heavySubstepKernel(double* __restrict__ st, const double* __rest
     const double dtB2 = PEFRL_LAMBDA * subDt;
 
     auto drift = [&](double dtStage) {
-        if (active) {
+        if (isLeader) {
             kahanAdd(x, cx, vx * dtStage);
             kahanAdd(y, cy, vy * dtStage);
             kahanAdd(z, cz, vz * dtStage);
@@ -255,14 +298,19 @@ __global__ void heavySubstepKernel(double* __restrict__ st, const double* __rest
 
     auto syncAndKick = [&](double dtKick) {
         __syncthreads();
-        if (active) {
-            sx[i] = x + cx;
-            sy[i] = y + cy;
-            sz[i] = z + cz;
+        if (isLeader) {
+            sx[bodyIdx] = x + cx;
+            sy[bodyIdx] = y + cy;
+            sz[bodyIdx] = z + cz;
         }
         __syncthreads();
-        if (active) {
-            heavyAccel(i, sx[i], sy[i], sz[i], sx, sy, sz, smu, src, sj2R2, sSpinX, sSpinY, sSpinZ, pIdx, mMask, M, ax, ay, az);
+        const double bx = validBody ? sx[bodyIdx] : 0.0;
+        const double by = validBody ? sy[bodyIdx] : 0.0;
+        const double bz = validBody ? sz[bodyIdx] : 0.0;
+        heavyAccelCoop8(bodyIdx, lane, validBody, bx, by, bz,
+                        sx, sy, sz, smu, src, sj2R2, sSpinX, sSpinY, sSpinZ,
+                        pIdx, mMask, M, ax, ay, az);
+        if (isLeader) {
             kahanAdd(vx, cvx, ax * dtKick);
             kahanAdd(vy, cvy, ay * dtKick);
             kahanAdd(vz, cvz, az * dtKick);
@@ -287,17 +335,22 @@ __global__ void heavySubstepKernel(double* __restrict__ st, const double* __rest
 
     // Finalize compensated state and compute exact end-of-step acceleration
     __syncthreads();
-    if (active) {
+    if (isLeader) {
         x += cx;   y += cy;   z += cz;
         vx += cvx; vy += cvy; vz += cvz;
-        sx[i] = x; sy[i] = y; sz[i] = z;
+        sx[bodyIdx] = x; sy[bodyIdx] = y; sz[bodyIdx] = z;
     }
     __syncthreads();
-    if (active) {
-        heavyAccel(i, x, y, z, sx, sy, sz, smu, src, sj2R2, sSpinX, sSpinY, sSpinZ, pIdx, mMask, M, ax, ay, az);
-        st[i] = x;          st[M + i] = y;      st[2 * M + i] = z;
-        st[3 * M + i] = vx; st[4 * M + i] = vy; st[5 * M + i] = vz;
-        st[6 * M + i] = ax; st[7 * M + i] = ay; st[8 * M + i] = az;
+    const double bx = validBody ? sx[bodyIdx] : 0.0;
+    const double by = validBody ? sy[bodyIdx] : 0.0;
+    const double bz = validBody ? sz[bodyIdx] : 0.0;
+    heavyAccelCoop8(bodyIdx, lane, validBody, bx, by, bz,
+                    sx, sy, sz, smu, src, sj2R2, sSpinX, sSpinY, sSpinZ,
+                    pIdx, mMask, M, ax, ay, az);
+    if (isLeader) {
+        st[bodyIdx] = x;          st[M + bodyIdx] = y;      st[2 * M + bodyIdx] = z;
+        st[3 * M + bodyIdx] = vx; st[4 * M + bodyIdx] = vy; st[5 * M + bodyIdx] = vz;
+        st[6 * M + bodyIdx] = ax; st[7 * M + bodyIdx] = ay; st[8 * M + bodyIdx] = az;
     }
 }
 
@@ -347,17 +400,20 @@ __device__ __forceinline__ void loadHeavyShared(HeavyShared& s, const double* __
 
 template <bool MIXED>
 __device__ __forceinline__ void particleAccel(double x, double y, double z, const HeavyShared& s,
-                                              int M, double& ax, double& ay, double& az) {
+                                              int M, double& ax, double& ay, double& az,
+                                              double& maxOmega2) {
     if constexpr (!MIXED) {
         ax = ay = az = 0.0;
+        double maxW2 = 0.0;
         #pragma unroll 4
         for (int j = 0; j < M; ++j) {
             const double dx = s.x[j] - x, dy = s.y[j] - y, dz = s.z[j] - z;
             const double d2 = fma(dx, dx, fma(dy, dy, dz * dz));
             const double inv = rsqrt(fmax(d2, 1.0));
             const double inv2 = inv * inv;
-            const double g = s.mu[j] * inv2 * (1.0 + s.rc[j] * inv);
-            const double sc = g * inv;
+            const double w2 = s.mu[j] * inv2 * inv;
+            maxW2 = fmax(maxW2, w2);
+            const double sc = w2 * (1.0 + s.rc[j] * inv);
             ax = fma(sc, dx, ax);
             ay = fma(sc, dy, ay);
             az = fma(sc, dz, az);
@@ -373,9 +429,11 @@ __device__ __forceinline__ void particleAccel(double x, double y, double z, cons
                 az = fma(coeff, dz, fma(pole, s.spinZ[j], az));
             }
         }
+        maxOmega2 = maxW2;
     } else {
         float axN = 0.f, ayN = 0.f, azN = 0.f;
         float axR = 0.f, ayR = 0.f, azR = 0.f;
+        float maxW2 = 0.0f;
         #pragma unroll 4
         for (int j = 0; j < M; ++j) {
             const float dx = static_cast<float>((s.x[j] - x) * INV_AU);
@@ -385,6 +443,7 @@ __device__ __forceinline__ void particleAccel(double x, double y, double z, cons
             const float inv = rsqrtf(d2);
             const float inv2 = inv * inv;
             const float s1 = s.muAU[j] * inv2 * inv;
+            maxW2 = fmaxf(maxW2, s1);
             const float s2 = s1 * s.rcAU[j] * inv;
             axN = fmaf(s1, dx, axN); ayN = fmaf(s1, dy, ayN); azN = fmaf(s1, dz, azN);
             axR = fmaf(s2, dx, axR); ayR = fmaf(s2, dy, ayR); azR = fmaf(s2, dz, azR);
@@ -403,6 +462,7 @@ __device__ __forceinline__ void particleAccel(double x, double y, double z, cons
         ax = (static_cast<double>(axN) + static_cast<double>(axR)) * AU;
         ay = (static_cast<double>(ayN) + static_cast<double>(ayR)) * AU;
         az = (static_cast<double>(azN) + static_cast<double>(azR)) * AU;
+        maxOmega2 = static_cast<double>(maxW2);
     }
 }
 
@@ -416,8 +476,8 @@ __global__ void particleInitAccKernel(double* __restrict__ p, size_t N,
     __syncthreads();
     const size_t i = blockIdx.x * static_cast<size_t>(blockDim.x) + threadIdx.x;
     if (i >= N) return;
-    double ax, ay, az;
-    particleAccel<MIXED>(p[i], p[N + i], p[2 * N + i], s, M, ax, ay, az);
+    double ax, ay, az, dummyW2 = 0.0;
+    particleAccel<MIXED>(p[i], p[N + i], p[2 * N + i], s, M, ax, ay, az, dummyW2);
     p[6 * N + i] = ax;
     p[7 * N + i] = ay;
     p[8 * N + i] = az;
@@ -434,15 +494,47 @@ __global__ void particleStepKernel(double* __restrict__ p, size_t N,
     const size_t i = blockIdx.x * static_cast<size_t>(blockDim.x) + threadIdx.x;
     if (i >= N) return;
 
-    double x = p[i], y = p[N + i], z = p[2 * N + i];
-    double vx = p[3 * N + i], vy = p[4 * N + i], vz = p[5 * N + i];
-    double ax = p[6 * N + i], ay = p[7 * N + i], az = p[8 * N + i];
+    const double x0 = p[i], y0 = p[N + i], z0 = p[2 * N + i];
+    const double vx0 = p[3 * N + i], vy0 = p[4 * N + i], vz0 = p[5 * N + i];
+    const double ax0 = p[6 * N + i], ay0 = p[7 * N + i], az0 = p[8 * N + i];
+
+    double x = x0, y = y0, z = z0;
+    double vx = vx0, vy = vy0, vz = vz0;
+    double ax = ax0, ay = ay0, az = az0;
 
     const double h = 0.5 * dt;
     vx = fma(h, ax, vx); vy = fma(h, ay, vy); vz = fma(h, az, vz);
     x = fma(vx, dt, x);  y = fma(vy, dt, y);  z = fma(vz, dt, z);
-    particleAccel<MIXED>(x, y, z, s, M, ax, ay, az);
-    vx = fma(h, ax, vx); vy = fma(h, ay, vy); vz = fma(h, az, vz);
+    double maxOmega2 = 0.0;
+    particleAccel<MIXED>(x, y, z, s, M, ax, ay, az, maxOmega2);
+
+    // Optimistic per-particle adaptive CFL close-encounter sub-stepping
+    constexpr double ETA_PARTICLE = 0.25;
+    const double daL1 = fabs(ax - ax0) + fabs(ay - ay0) + fabs(az - az0);
+    const double a0L1 = fabs(ax0) + fabs(ay0) + fabs(az0);
+    const bool sharpEncounter = (maxOmega2 * dt * dt > (ETA_PARTICLE * ETA_PARTICLE)) ||
+                                (a0L1 > 1e-12 && daL1 > 0.35 * a0L1);
+    if (sharpEncounter) {
+        // Evaluate start-of-step omega2 as well in case the 1-step drift flung the particle out of periapsis
+        double startAx, startAy, startAz, startOmega2 = 0.0;
+        particleAccel<MIXED>(x0, y0, z0, s, M, startAx, startAy, startAz, startOmega2);
+        const double peakOmega = sqrt(fmax(maxOmega2, startOmega2));
+        const int nSub = min(64, max(4, static_cast<int>(ceil((peakOmega * fabs(dt)) / ETA_PARTICLE))));
+        const double subDt = dt / static_cast<double>(nSub);
+        const double subH  = 0.5 * subDt;
+        x = x0; y = y0; z = z0;
+        vx = vx0; vy = vy0; vz = vz0;
+        ax = startAx; ay = startAy; az = startAz;
+        for (int k = 0; k < nSub; ++k) {
+            vx = fma(subH, ax, vx); vy = fma(subH, ay, vy); vz = fma(subH, az, vz);
+            x  = fma(vx, subDt, x); y  = fma(vy, subDt, y); z  = fma(vz, subDt, z);
+            double stepW2 = 0.0;
+            particleAccel<MIXED>(x, y, z, s, M, ax, ay, az, stepW2);
+            vx = fma(subH, ax, vx); vy = fma(subH, ay, vy); vz = fma(subH, az, vz);
+        }
+    } else {
+        vx = fma(h, ax, vx); vy = fma(h, ay, vy); vz = fma(h, az, vz);
+    }
 
     p[i] = x;          p[N + i] = y;      p[2 * N + i] = z;
     p[3 * N + i] = vx; p[4 * N + i] = vy; p[5 * N + i] = vz;
@@ -578,6 +670,7 @@ unsigned int blocksFor(size_t n, int block) {
 SubstrateEngine::SubstrateEngine() {
     CUDA_CHECK(cudaStreamCreateWithFlags(&m_stream, cudaStreamNonBlocking));
     CUDA_CHECK(cudaEventCreateWithFlags(&m_snapEvent, cudaEventDisableTiming));
+    CUDA_CHECK(cudaEventCreateWithFlags(&m_beltEvent, cudaEventDisableTiming));
     CUDA_CHECK(cudaEventCreate(&m_timerStart));
     CUDA_CHECK(cudaEventCreate(&m_timerStop));
 }
@@ -586,6 +679,7 @@ SubstrateEngine::~SubstrateEngine() {
     release();
     cudaEventDestroy(m_timerStop);
     cudaEventDestroy(m_timerStart);
+    cudaEventDestroy(m_beltEvent);
     cudaEventDestroy(m_snapEvent);
     cudaStreamDestroy(m_stream);
 }
@@ -602,16 +696,21 @@ void SubstrateEngine::release() {
     cudaFree(d_particles);  d_particles = nullptr;
     cudaFree(d_beltBins);   d_beltBins = nullptr;
     cudaFree(d_beltSums);   d_beltSums = nullptr;
-    cudaFreeHost(h_snapPinned); h_snapPinned = nullptr;
+    cudaFreeHost(h_snapPinned);     h_snapPinned = nullptr;
+    cudaFreeHost(h_beltBinsPinned); h_beltBinsPinned = nullptr;
+    cudaFreeHost(h_beltSumsPinned); h_beltSumsPinned = nullptr;
     m_deviceBytes = 0;
     m_snapPending = false;
+    m_beltPending = false;
     m_timerPending = false;
 }
 
 void SubstrateEngine::refreshCachedAccelerations(bool relativistic) {
     if (m_numHeavy <= 0) return;
-    heavyInitAccKernel<<<1, MAX_HEAVY, 0, m_stream>>>(d_heavy, d_mu, d_rc, d_j2R2, d_spinAxis,
-                                                      d_parentIdx, d_moonMask, m_numHeavy, relativistic);
+    // Exact multiple of 32 covering M * 8 threads (e.g., 55 * 8 = 440 -> 448 threads = 14 warps, <= 1024).
+    const int heavyBlockThreads = std::min(1024, ((m_numHeavy * HEAVY_THREADS_PER_BODY + 31) / 32) * 32);
+    heavyInitAccKernel<<<1, heavyBlockThreads, 0, m_stream>>>(d_heavy, d_mu, d_rc, d_j2R2, d_spinAxis,
+                                                              d_parentIdx, d_moonMask, m_numHeavy, relativistic);
     if (m_numParticles > 0) {
         particleInitAccKernel<false><<<blocksFor(m_numParticles, PARTICLE_BLOCK), PARTICLE_BLOCK, 0, m_stream>>>(
             d_particles, m_numParticles, d_heavy, d_mu, d_rc, d_j2R2, d_spinAxis, m_numHeavy, relativistic);
@@ -719,6 +818,8 @@ void SubstrateEngine::load(const std::vector<HeavyBodyDesc>& heavy, const Partic
     CUDA_CHECK(cudaMemcpy(d_parentIdx, m_parentIdx.data(), M * sizeof(int), cudaMemcpyHostToDevice));
     CUDA_CHECK(cudaMemcpy(d_moonMask, m_moonMask.data(), M * sizeof(uint64_t), cudaMemcpyHostToDevice));
     CUDA_CHECK(cudaMallocHost(&h_snapPinned, 6 * M * sizeof(double)));
+    CUDA_CHECK(cudaMallocHost(&h_beltBinsPinned, TOTAL_INT_BINS * sizeof(uint32_t)));
+    CUDA_CHECK(cudaMallocHost(&h_beltSumsPinned, 2 * sizeof(float)));
     m_deviceBytes = (hs.size() + 7 * M) * sizeof(double);
 
     const size_t N = particles.count();
@@ -789,9 +890,10 @@ double SubstrateEngine::baseDensity(int bodyIdx) const {
     return (bodyIdx >= 0 && bodyIdx < m_numHeavy) ? m_baseDensity[bodyIdx] : 0.0;
 }
 
-void SubstrateEngine::computeBeltStats(BeltStats& out, double jupiterSemiMajorAU) {
-    out = BeltStats{};
-    if (m_numParticles == 0 || !d_particles || !d_beltBins) return;
+void SubstrateEngine::requestBeltStats(double jupiterSemiMajorAU) {
+    if (m_numParticles == 0 || !d_particles || !d_beltBins || !h_beltBinsPinned || !h_beltSumsPinned || m_beltPending) {
+        return;
+    }
 
     CUDA_CHECK(cudaMemsetAsync(d_beltBins, 0, TOTAL_INT_BINS * sizeof(uint32_t), m_stream));
     CUDA_CHECK(cudaMemsetAsync(d_beltSums, 0, 2 * sizeof(float), m_stream));
@@ -801,38 +903,65 @@ void SubstrateEngine::computeBeltStats(BeltStats& out, double jupiterSemiMajorAU
         d_beltBins, d_beltSums);
     CUDA_CHECK(cudaGetLastError());
 
-    uint32_t hBins[TOTAL_INT_BINS] = {};
-    float hSums[2] = {};
-    CUDA_CHECK(cudaMemcpyAsync(hBins, d_beltBins, sizeof(hBins), cudaMemcpyDeviceToHost, m_stream));
-    CUDA_CHECK(cudaMemcpyAsync(hSums, d_beltSums, sizeof(hSums), cudaMemcpyDeviceToHost, m_stream));
-    CUDA_CHECK(cudaStreamSynchronize(m_stream));
+    CUDA_CHECK(cudaMemcpyAsync(h_beltBinsPinned, d_beltBins, TOTAL_INT_BINS * sizeof(uint32_t),
+                               cudaMemcpyDeviceToHost, m_stream));
+    CUDA_CHECK(cudaMemcpyAsync(h_beltSumsPinned, d_beltSums, 2 * sizeof(float),
+                               cudaMemcpyDeviceToHost, m_stream));
+    CUDA_CHECK(cudaEventRecord(m_beltEvent, m_stream));
+    m_beltPending = true;
+}
 
+bool SubstrateEngine::pollBeltStats(BeltStats& out) {
+    if (!m_beltPending) return false;
+    const cudaError_t q = cudaEventQuery(m_beltEvent);
+    if (q == cudaErrorNotReady) return false;
+    CUDA_CHECK(q);
+
+    out = BeltStats{};
     for (int i = 0; i < BeltStats::MAIN_BINS; ++i)
-        out.mainBeltHist[i] = static_cast<float>(hBins[i]);
+        out.mainBeltHist[i] = static_cast<float>(h_beltBinsPinned[i]);
     for (int i = 0; i < BeltStats::KUIPER_BINS; ++i)
-        out.kuiperBeltHist[i] = static_cast<float>(hBins[BeltStats::MAIN_BINS + i]);
+        out.kuiperBeltHist[i] = static_cast<float>(h_beltBinsPinned[BeltStats::MAIN_BINS + i]);
     for (int i = 0; i < BeltStats::ECC_BINS; ++i)
-        out.eccHist[i] = static_cast<float>(hBins[BeltStats::MAIN_BINS + BeltStats::KUIPER_BINS + i]);
+        out.eccHist[i] = static_cast<float>(h_beltBinsPinned[BeltStats::MAIN_BINS + BeltStats::KUIPER_BINS + i]);
 
     const int base = BeltStats::MAIN_BINS + BeltStats::KUIPER_BINS + BeltStats::ECC_BINS;
-    out.asteroidalCount = hBins[base + 0];
-    out.jfcCount        = hBins[base + 1];
-    out.halleyCount     = hBins[base + 2];
-    out.unboundCount    = hBins[base + 3];
-    out.boundCount      = hBins[base + 4];
+    out.asteroidalCount = h_beltBinsPinned[base + 0];
+    out.jfcCount        = h_beltBinsPinned[base + 1];
+    out.halleyCount     = h_beltBinsPinned[base + 2];
+    out.unboundCount    = h_beltBinsPinned[base + 3];
+    out.boundCount      = h_beltBinsPinned[base + 4];
     if (out.boundCount > 0) {
-        out.meanEcc    = hSums[0] / static_cast<float>(out.boundCount);
-        out.meanIncDeg = hSums[1] / static_cast<float>(out.boundCount);
+        out.meanEcc    = h_beltSumsPinned[0] / static_cast<float>(out.boundCount);
+        out.meanIncDeg = h_beltSumsPinned[1] / static_cast<float>(out.boundCount);
+    }
+
+    m_beltPending = false;
+    return true;
+}
+
+void SubstrateEngine::computeBeltStats(BeltStats& out, double jupiterSemiMajorAU) {
+    if (m_beltPending) {
+        CUDA_CHECK(cudaEventSynchronize(m_beltEvent));
+        pollBeltStats(out);
+    }
+    out = BeltStats{};
+    requestBeltStats(jupiterSemiMajorAU);
+    if (m_beltPending) {
+        CUDA_CHECK(cudaEventSynchronize(m_beltEvent));
+        pollBeltStats(out);
     }
 }
 
 void SubstrateEngine::step(const StepParams& p, bool captureSnapshot) {
     const int M = m_numHeavy;
     const int sub = std::max(1, p.substeps);
+    // Exact multiple of 32 covering M * 8 threads (e.g., 55 * 8 = 440 -> 448 threads = 14 warps, <= 1024).
+    const int heavyBlockThreads = std::min(1024, ((M * HEAVY_THREADS_PER_BODY + 31) / 32) * 32);
 
-    heavySubstepKernel<<<1, MAX_HEAVY, 0, m_stream>>>(d_heavy, d_mu, d_rc, d_j2R2, d_spinAxis,
-                                                      d_parentIdx, d_moonMask,
-                                                      M, p.relativistic, p.dtSeconds / sub, sub);
+    heavySubstepKernel<<<1, heavyBlockThreads, 0, m_stream>>>(d_heavy, d_mu, d_rc, d_j2R2, d_spinAxis,
+                                                              d_parentIdx, d_moonMask,
+                                                              M, p.relativistic, p.dtSeconds / sub, sub);
     m_simTime += p.dtSeconds;
     if (captureSnapshot) requestSnapshot();
 
@@ -957,12 +1086,13 @@ double SubstrateEngine::heliopauseTopologicalDragAU(double swProtonCm3At1AU,
     return heliosheathStagnationFactor * rTS_AU;
 }
 
-double SubstrateEngine::newtonianEnergy(const HeavySnapshot& s) const {
+double SubstrateEngine::newtonianEnergy(const HeavySnapshot& s, bool relativistic) const {
     const int M = m_numHeavy;
     double ke = 0.0, pe = 0.0;
     for (int i = 0; i < M; ++i) {
         const double* v = &s.vel[3 * i];
         ke += 0.5 * m_mass[i] * (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
+        const double rc_i = (m_mu[i] > 0.0) ? m_rc[i] : 0.0;
         for (int j = 0; j < M; ++j) {
             if (j == i) continue;
             const double dx = s.pos[3 * j] - s.pos[3 * i];
@@ -970,6 +1100,12 @@ double SubstrateEngine::newtonianEnergy(const HeavySnapshot& s) const {
             const double dz = s.pos[3 * j + 2] - s.pos[3 * i + 2];
             const double r = std::max(std::sqrt(dx * dx + dy * dy + dz * dz), 1.0);
             pe -= 0.5 * m_mass[i] * m_mu[j] / r;
+            if (relativistic && m_mu[j] > 0.0) {
+                const double rc_j = m_rc[j];
+                // Pairwise 1PN potential U_1PN = -m_i * mu_j * (rc_i + rc_j) / (2 * r^2);
+                // factor 0.25 accounts for double-counting (i,j) and (j,i) in the full double sum.
+                pe -= 0.25 * m_mass[i] * m_mu[j] * (rc_i + rc_j) / (r * r);
+            }
         }
         const int p = m_parentIdx[i];
         if (p > 0 && m_j2R2[p] > 0.0 && m_mu[p] > 0.0 && m_mu[i] > 0.0) {
