@@ -4,8 +4,11 @@
 # LICENSE, and documentation are tracked.
 # ==============================================================================
 
-# CMake & Ninja out-of-source / in-source build directories
+# CMake & Ninja out-of-source / in-source build directories & release packages
 build/
+build_release/
+release_pkg/
+*.zip
 out/
 cmake-build-*/
 CMakeFiles/
