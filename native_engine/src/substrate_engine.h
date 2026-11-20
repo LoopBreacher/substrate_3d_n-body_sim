@@ -24,8 +24,9 @@ struct StepParams {
 };
 
 struct HeavySnapshot {
-    std::vector<double> pos;  // 3*M, interleaved xyz, metres
-    std::vector<double> vel;  // 3*M, interleaved xyz, m/s
+    std::vector<double> pos;       // 3*M, interleaved xyz, metres
+    std::vector<double> vel;       // 3*M, interleaved xyz, m/s
+    std::vector<double> spinAxis;  // 3*M, interleaved sx, sy, sz unit pole vectors (live precessing!)
     double simTimeSeconds = 0.0;
 };
 
@@ -53,6 +54,19 @@ struct BeltStats {
     float meanIncDeg         = 0.0f;
 };
 
+// GPU-binned radial density profile for the passive Saturnian ring system (zero particle readback).
+struct RingStats {
+    static constexpr int RING_BINS       = 150;       // 500 km per bin across [70,000, 145,000] km
+    static constexpr double RING_MIN_KM  = 70000.0;
+    static constexpr double RING_MAX_KM  = 145000.0;
+
+    float radialHist[RING_BINS] = {};
+    uint32_t boundCount         = 0;
+    uint32_t escapedCount       = 0;
+    float meanRadiusKm          = 0.0f;
+    float meanEcc               = 0.0f;
+};
+
 // GPU Substrate Logistics engine.
 class SubstrateEngine {
 public:
@@ -62,13 +76,14 @@ public:
     SubstrateEngine& operator=(const SubstrateEngine&) = delete;
 
     void load(const std::vector<HeavyBodyDesc>& heavy, const ParticleSet& particles,
-              bool correctBarycenter = true);
+              bool correctBarycenter = true, const ParticleSet* saturnRings = nullptr);
 
     void step(const StepParams& p, bool captureSnapshot = false);
+    void refreshCachedAccelerations(bool relativistic);
     void requestSnapshot();
     const HeavySnapshot& snapshot();
 
-    void writeRenderPositions(float4* heavyOut, float4* particleOut, int originIdx);
+    void writeRenderPositions(float4* heavyOut, float4* particleOut, int originIdx, float4* ringOut = nullptr);
 
     // Interactive Garbage Collection Threshold Sandbox:
     // Overrides a heavy body's node density (nodes/m^3) live on the GPU so crossing
@@ -84,15 +99,24 @@ public:
     bool pollBeltStats(BeltStats& out); // Non-blocking: unpacks and returns true when GPU event finishes
     bool beltStatsPending() const { return m_beltPending; }
 
+    // Computes Saturnian ring radial density profile directly on GPU (zero particle readback).
+    void computeRingStats(RingStats& out);
+    void requestRingStats();
+    bool pollRingStats(RingStats& out); // Non-blocking: unpacks and returns true when GPU event finishes
+    bool ringStatsPending() const { return m_ringStatsPending; }
+
     void beginTimer();
     void endTimer();
     float lastTimedMs();
 
     void copyParticlePositions(std::vector<double>& xyzOut);
+    void copyRingPositions(std::vector<double>& xyzOut);
     void synchronize();
 
     int numHeavy() const { return m_numHeavy; }
     size_t numParticles() const { return m_numParticles; }
+    size_t numRingParticles() const { return m_numRingParticles; }
+    bool isCooperativeHeavy() const { return m_useCoopHeavy; }
     double simTimeSeconds() const { return m_simTime; }
     size_t deviceBytes() const { return m_deviceBytes; }
     cudaStream_t stream() const { return m_stream; }
@@ -109,6 +133,8 @@ public:
     const std::vector<double>& j2() const { return m_j2; }
     const std::vector<double>& momentOfInertiaC() const { return m_momentC; }
     const std::vector<int>& tidalLockMode() const { return m_tidalLockMode; }
+    const std::vector<int>& parentIndices() const { return m_parentIdx; }
+    const std::vector<uint64_t>& moonMasks() const { return m_moonMask; }
     const std::vector<double>& obliquityDeg() const { return m_obliquityDeg; }
 
     double gravitationalFloorAU() const;
@@ -119,52 +145,77 @@ public:
                                               double swSpeedKms = 440.0,
                                               double heliosheathStagnationFactor = 1.35);
 
-    double newtonianEnergy(const HeavySnapshot& s, bool relativistic = true) const; // heavy system, J
-    double angularMomentumMag(const HeavySnapshot& s) const;   // heavy system |L|, kg*m^2/s
-    double barycenterDriftSpeed(const HeavySnapshot& s) const; // |V_cm|, m/s
+    double newtonianEnergy(const HeavySnapshot& s, bool relativistic = true) const; // EIH 1PN + J2 energy, J
+    void canonicalMomentum(const HeavySnapshot& s, bool relativistic,
+                           double& px, double& py, double& pz) const;               // EIH canonical P, kg*m/s
+    double angularMomentumMag(const HeavySnapshot& s, bool relativistic = true) const;   // |L_EIH + S|, kg*m^2/s
+    double barycenterDriftSpeed(const HeavySnapshot& s, bool relativistic = true) const; // |P_EIH| / M_tot, m/s
 
 private:
     void release();
-    void refreshCachedAccelerations(bool relativistic);
 
     cudaStream_t m_stream = nullptr;
     cudaEvent_t m_snapEvent = nullptr;
     cudaEvent_t m_beltEvent = nullptr;
+    cudaEvent_t m_ringStatsEvent = nullptr;
     cudaEvent_t m_timerStart = nullptr;
     cudaEvent_t m_timerStop = nullptr;
     bool m_snapPending = false;
     bool m_beltPending = false;
+    bool m_ringStatsPending = false;
     bool m_timerPending = false;
     float m_lastTimedMs = 0.0f;
 
     int m_numHeavy = 0;
     size_t m_numParticles = 0;
+    size_t m_numRingParticles = 0;
+    int m_saturnIdx = -1;
+    int m_numRingPerturbers = 0;
+    bool m_useCoopHeavy = false;
     double m_simTime = 0.0;
     size_t m_deviceBytes = 0;
 
     double* d_heavy = nullptr;
+    double* d_heavyPingPong = nullptr; // 2 * 6 * MAX_HEAVY L2-resident double buffer (px,py,pz,sx,sy,sz)
+    double* d_eihScratch = nullptr;    // 7 * MAX_HEAVY L2-resident EIH scratch (aNx,aNy,aNz,phi,vMidX,vMidY,vMidZ)
+    double* d_cflOmega2 = nullptr;     // MAX_HEAVY per-body max orbital frequency squared for cooperative CFL
     double* d_mu = nullptr;
     double* d_rc = nullptr;
     double* d_j2R2 = nullptr;
     double* d_spinAxis = nullptr;
+    double* d_spinPrecCoeff = nullptr;
     int* d_parentIdx = nullptr;
     uint64_t* d_moonMask = nullptr;
     double* d_particles = nullptr;
 
-    // Device & pinned buffers for zero-readback GPU belt histograms (~1 KB)
+    // Dedicated passive Saturnian ring system buffers (strictly separate from heliocentric BeltStats)
+    double* d_ringParticles = nullptr;
+    int* d_ringPertIdx = nullptr;
+    int* d_bodyRingSlot = nullptr;     // M-length map: bodyIdx -> [0..numPert-1] or -1 (zero-sync multi-SM ringHist write)
+    double* d_ringHist = nullptr;
+    int* d_ringActualSubsteps = nullptr;
+
+    // Device & pinned buffers for zero-readback GPU belt & Saturn ring histograms (~2 KB)
     uint32_t* d_beltBins = nullptr;
     float* d_beltSums = nullptr;
     uint32_t* h_beltBinsPinned = nullptr;
     float* h_beltSumsPinned = nullptr;
+
+    uint32_t* d_ringBins = nullptr;
+    float* d_ringSums = nullptr;
+    uint32_t* h_ringBinsPinned = nullptr;
+    float* h_ringSumsPinned = nullptr;
 
     double* h_snapPinned = nullptr;
     HeavySnapshot m_snapshot;
     double m_snapTime = 0.0;
 
     std::vector<double> m_mass, m_radius, m_nodes, m_baseDensity, m_density, m_mu, m_rc;
-    std::vector<double> m_spinOmega, m_spinAxisX, m_spinAxisY, m_spinAxisZ, m_momentC, m_j2, m_j2R2, m_obliquityDeg;
+    std::vector<double> m_spinOmega, m_spinAxisX, m_spinAxisY, m_spinAxisZ, m_spinPrecCoeff;
+    std::vector<double> m_momentC, m_j2, m_j2R2, m_obliquityDeg;
     std::vector<int> m_tidalLockMode, m_parentIdx;
     std::vector<uint64_t> m_moonMask;
+    uint64_t m_oblateSunMask = 0ULL;
     std::vector<bool> m_overrideActive;
 };
 

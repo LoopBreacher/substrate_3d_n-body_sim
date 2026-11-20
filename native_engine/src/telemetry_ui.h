@@ -4,9 +4,11 @@
 #include <imgui.h>
 
 #include <functional>
+#include <string>
 #include <vector>
 
 #include "astro_metrics.h"
+#include "csv_export.h"
 #include "payload.h"
 #include "renderer.h"
 #include "substrate_engine.h"
@@ -37,11 +39,23 @@ struct TelemetryUIState {
     float sandboxLog10Rho = 0.2f;  // ~1.58 nodes/m^3 when toggled on
     int lastSandboxTarget = -1;
 
-    // Cached GPU belt stats
+    // Cached GPU belt & Saturnian ring stats (non-blocking async polling)
     BeltStats beltStats{};
     int beltStatsFrameCounter = 0;
 
+    RingStats ringStats{};
+    int ringStatsFrameCounter = 0;
+
+    // Live close-encounter & periapsis event observatory
+    AstroEventTracker eventTracker{};
+
+    // Conservation & precession time-series log for live CSV export
     ConservationHistory conservation{};
+    std::vector<ConservationSample> conservationLog;
+    double initialEarthSpinPhi = 0.0;
+    bool hasInitialEarthSpinPhi = false;
+    double baseMomX = 0.0, baseMomY = 0.0, baseMomZ = 0.0;
+    std::string lastExportStatus;
 };
 
 // Draws deconflicted 2D HUD labels (collapsing moon badges when zoomed out, radial spider

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <string>
 #include <vector>
 
 #include "payload.h"
@@ -74,7 +75,9 @@ struct SubstrateBodyAudit {
     int tidalLockMode = 0;               // 0 = Free Rotator, 1 = 1:1 Tidal Lock, 2 = 3:2 Spin-Orbit Resonance
     double spinPeriodHours = 0.0;        // Live sidereal spin period (emergent from orbit for moons & Mercury!)
     double vEquatorial_ms = 0.0;         // Equatorial rotation speed v_eq = |omega_rot| * R (m/s)
-    double obliquity_deg = 0.0;          // Spin axis tilt (deg)
+    double obliquity_deg = 0.0;          // Seeded axial tilt (deg)
+    double liveObliquityDeg = 0.0;       // Live obliquity arccos(s_z) from GPU spin pole (deg)
+    double spinPrecessionArcsecYr = 0.0; // Instantaneous lunisolar spin-axis precession rate (arcsec/yr)
     double riverCentrifugalQ = 0.0;      // q_rot = 2 * (v_eq / v_inflow)^2
     double derivedJ2 = 0.0;              // Darwin-Radau hydrostatic quadrupole J2
     double polarFlatteningF = 0.0;       // Polar flattening f = (R_eq - R_pol) / R_eq
@@ -102,6 +105,48 @@ struct LagrangePoints {
     double pos_m[5][3] = {};  // World-space (m) coordinates of L1, L2, L3, L4, L5
 };
 
+struct SaturnRingMarkers {
+    bool valid = false;
+    double mimas3to1_km = 0.0;      // Live J2-corrected Mimas 3:1 ILR (~89,409 km)
+    double mimas2to1_km = 0.0;      // Live J2-corrected Mimas 2:1 ILR / Cassini inner edge (~117,001 km)
+    double iceRoche_km  = 0.0;      // Saturn icy fluid Roche limit (~129,862 km)
+    double enckeGap_km  = 133589.0; // Pan / Encke Gap reference
+};
+
+enum class AstroEventType : int {
+    Periapsis = 0,
+    CloseEncounter = 1,
+};
+
+struct AstroEvent {
+    double simTimeYears = 0.0;
+    AstroEventType type = AstroEventType::Periapsis;
+    int bodyIdx = -1;
+    int refIdx = -1;
+    std::string bodyName;
+    std::string refName;
+    double minDistKm = 0.0;
+    double minDistAU = 0.0;
+    double relSpeedKms = 0.0;
+    double tisserandTJ = 0.0; // Jupiter Tisserand parameter at event time (if heliocentric)
+};
+
+struct AstroEventTracker {
+    static constexpr size_t MAX_EVENTS = 500;
+    std::vector<AstroEvent> events;
+    bool initialized = false;
+    bool includeFastMoons = false; // Skip rapid moon periapses (T < 5 days) in UI log unless toggled
+    double prevSimTime = 0.0;
+    std::vector<double> prevRv;     // Size M: previous r_rel . v_rel against parent
+    std::vector<double> prevPairRv; // Size M*M: previous r_ij . v_ij for small-body vs planet flybys
+
+    void reset(int numHeavy);
+    void update(const HeavySnapshot& snap,
+                const std::vector<HeavyBodyDesc>& descs,
+                const std::vector<int>& parentIdx,
+                const SubstrateEngine& engine);
+};
+
 KeplerElements computeKeplerElements(int bodyIdx, int parentIdx,
                                      const HeavySnapshot& snap,
                                      const SubstrateEngine& engine);
@@ -109,6 +154,10 @@ KeplerElements computeKeplerElements(int bodyIdx, int parentIdx,
 LagrangePoints computeLagrangePoints(int bodyIdx, int parentIdx,
                                      const HeavySnapshot& snap,
                                      const SubstrateEngine& engine);
+
+SaturnRingMarkers computeSaturnRingMarkers(const HeavySnapshot& snap,
+                                           const std::vector<HeavyBodyDesc>& descs,
+                                           const SubstrateEngine& engine);
 
 DomainRadii computeDomainRadii(int bodyIdx, int parentIdx,
                                const std::vector<HeavyBodyDesc>& descs,

@@ -70,6 +70,7 @@ add_executable(substrate_native
     src/main.cpp
     src/payload.cpp
     src/astro_metrics.cpp
+    src/csv_export.cpp
     src/telemetry_ui.cpp
     src/renderer.cpp
     src/substrate_engine.cu)

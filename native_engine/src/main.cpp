@@ -30,6 +30,7 @@
 #include <vector>
 
 #include "astro_metrics.h"
+#include "csv_export.h"
 #include "payload.h"
 #include "renderer.h"
 #include "substrate_constants.h"
@@ -130,9 +131,434 @@ void applySciFiTheme() {
 }
 
 // ---------------------------------------------------------------------------
+// Symplectic Time-Reversal Proof & Live 2-Body Mercury EIH Precession Audit
+// ---------------------------------------------------------------------------
+struct TimeReversalReport {
+    double maxPosErrM = 0.0;
+    double maxVelErrMs = 0.0;
+    double maxSpinErrArcsec = 0.0;
+    int worstPosIdx = 0;
+    double finalTimeSec = 0.0;
+};
+
+TimeReversalReport runTimeReversalFromState(SubstrateEngine& engine,
+                                            const HeavySnapshot& s0,
+                                            int nSteps,
+                                            const StepParams& spFwd) {
+    StepParams spRev = spFwd;
+    spRev.dtSeconds = -std::abs(spFwd.dtSeconds);
+    for (int i = 0; i < nSteps; ++i) {
+        engine.step(spRev, i == nSteps - 1);
+    }
+    const auto sBack = engine.snapshot();
+
+    TimeReversalReport rep;
+    rep.finalTimeSec = engine.simTimeSeconds();
+    const int M = engine.numHeavy();
+    constexpr double ARCSEC_PER_RAD = (180.0 * 3600.0) / PI_CONST;
+    for (int i = 0; i < M; ++i) {
+        const double dx = sBack.pos[3 * i + 0] - s0.pos[3 * i + 0];
+        const double dy = sBack.pos[3 * i + 1] - s0.pos[3 * i + 1];
+        const double dz = sBack.pos[3 * i + 2] - s0.pos[3 * i + 2];
+        const double posErr = std::sqrt(dx * dx + dy * dy + dz * dz);
+        if (posErr > rep.maxPosErrM) {
+            rep.maxPosErrM = posErr;
+            rep.worstPosIdx = i;
+        }
+        const double dvx = sBack.vel[3 * i + 0] - s0.vel[3 * i + 0];
+        const double dvy = sBack.vel[3 * i + 1] - s0.vel[3 * i + 1];
+        const double dvz = sBack.vel[3 * i + 2] - s0.vel[3 * i + 2];
+        const double velErr = std::sqrt(dvx * dvx + dvy * dvy + dvz * dvz);
+        if (velErr > rep.maxVelErrMs) rep.maxVelErrMs = velErr;
+
+        if (s0.spinAxis.size() == static_cast<size_t>(3 * M) &&
+            sBack.spinAxis.size() == static_cast<size_t>(3 * M)) {
+            const double ax = s0.spinAxis[3 * i + 0], ay = s0.spinAxis[3 * i + 1], az = s0.spinAxis[3 * i + 2];
+            const double bx = sBack.spinAxis[3 * i + 0], by = sBack.spinAxis[3 * i + 1], bz = sBack.spinAxis[3 * i + 2];
+            const double cx = ay * bz - az * by;
+            const double cy = az * bx - ax * bz;
+            const double cz = ax * by - ay * bx;
+            const double dot = ax * bx + ay * by + az * bz;
+            const double angArcsec = std::atan2(std::sqrt(cx * cx + cy * cy + cz * cz), dot) * ARCSEC_PER_RAD;
+            if (angArcsec > rep.maxSpinErrArcsec) rep.maxSpinErrArcsec = angArcsec;
+        }
+    }
+    return rep;
+}
+
+struct MercuryPrecessionReport {
+    double rateEihArcsecCy = 0.0;
+    double rate0pnArcsecCy = 0.0;
+    double net1pnArcsecCy = 0.0;
+    double analyticalArcsecCy = 0.0;
+    double relErrPct = 0.0;
+    int orbitsMeasured = 10;
+};
+
+MercuryPrecessionReport runMercury2BodyPrecessionProof(const std::vector<HeavyBodyDesc>& fullHeavy) {
+    MercuryPrecessionReport rep;
+    const int idxSun = findBodyIndex(fullHeavy, "Sun");
+    const int idxMerc = findBodyIndex(fullHeavy, "Mercury");
+    if (idxSun < 0 || idxMerc < 0) return rep;
+
+    std::vector<HeavyBodyDesc> pair = {fullHeavy[idxSun], fullHeavy[idxMerc]};
+    pair[0].parent.clear();
+    pair[1].parent = pair[0].name;
+    ParticleSet emptyPs;
+
+    constexpr double ARCSEC_PER_RAD = (180.0 * 3600.0) / PI_CONST;
+    constexpr double JULIAN_CENTURY_SEC = 100.0 * 365.25 * 86400.0;
+
+    // Initial Keplerian period & exact analytical 1PN GR precession in K_OMEGA
+    SubstrateEngine eng;
+    eng.load(pair, emptyPs, true);
+    eng.requestSnapshot();
+    const auto sInit = eng.snapshot();
+    const auto kep0 = computeKeplerElements(1, 0, sInit, eng);
+    const double T_merc = kep0.period_days * 86400.0;
+    const double muTot = eng.mu()[0] + eng.mu()[1];
+    const double dOmegaOrbit =
+        (6.0 * PI_CONST * muTot) / (C_LIGHT * C_LIGHT * kep0.a_m * (1.0 - kep0.e * kep0.e));
+    rep.analyticalArcsecCy = dOmegaOrbit * ARCSEC_PER_RAD * (JULIAN_CENTURY_SEC / T_merc);
+
+    auto relVecs = [](const HeavySnapshot& s, glm::dvec3& rRel, glm::dvec3& vRel) {
+        rRel = glm::dvec3(s.pos[3] - s.pos[0], s.pos[4] - s.pos[1], s.pos[5] - s.pos[2]);
+        vRel = glm::dvec3(s.vel[3] - s.vel[0], s.vel[4] - s.vel[1], s.vel[5] - s.vel[2]);
+    };
+
+    auto bisectPerihelion = [&](const HeavySnapshot& sPrev, double tPrev, double dtStep, bool rel,
+                                HeavySnapshot& sCross, double& tCross) {
+        std::vector<HeavyBodyDesc> probeBodies = pair;
+        for (int b = 0; b < 2; ++b) {
+            for (int k = 0; k < 3; ++k) {
+                probeBodies[b].pos[k] = sPrev.pos[3 * b + k];
+                probeBodies[b].vel[k] = sPrev.vel[3 * b + k];
+                if (sPrev.spinAxis.size() == 6) probeBodies[b].spinAxis[k] = sPrev.spinAxis[3 * b + k];
+            }
+        }
+        SubstrateEngine probe;
+        probe.load(probeBodies, emptyPs, false);
+        probe.refreshCachedAccelerations(rel);
+        probe.synchronize();
+
+        StepParams spP;
+        spP.substeps = 2;
+        spP.relativistic = rel;
+        spP.precision = Precision::FP64;
+
+        double lo = 0.0, hi = dtStep, tCur = 0.0;
+        HeavySnapshot sMid = sPrev;
+        for (int iter = 0; iter < 42; ++iter) {
+            const double mid = 0.5 * (lo + hi);
+            const double dStep = mid - tCur;
+            if (std::abs(dStep) < 1e-12) break;
+            spP.dtSeconds = dStep;
+            probe.step(spP, true);
+            sMid = probe.snapshot();
+            tCur = mid;
+            glm::dvec3 rM, vM;
+            relVecs(sMid, rM, vM);
+            if (glm::dot(rM, vM) < 0.0) lo = mid;
+            else hi = mid;
+        }
+        sCross = sMid;
+        tCross = tPrev + tCur;
+    };
+
+    auto measureRate = [&](bool rel) -> double {
+        eng.load(pair, emptyPs, true);
+        eng.refreshCachedAccelerations(rel);
+        eng.synchronize();
+        eng.requestSnapshot();
+        HeavySnapshot sPrev = eng.snapshot();
+        double tPrev = 0.0;
+        glm::dvec3 rPrev, vPrev;
+        relVecs(sPrev, rPrev, vPrev);
+        double rdotvPrev = glm::dot(rPrev, vPrev);
+
+        StepParams sp;
+        sp.dtSeconds = T_merc / 400.0;
+        sp.substeps = 2;
+        sp.relativistic = rel;
+        sp.precision = Precision::FP64;
+
+        HeavySnapshot sCross0, sCrossN;
+        double tCross0 = 0.0, tCrossN = 0.0;
+        int crossings = 0;
+        const int targetOrbits = rep.orbitsMeasured;
+        const int maxSteps = 400 * (targetOrbits + 2) + 100;
+
+        for (int step = 0; step < maxSteps; ++step) {
+            eng.step(sp, true);
+            const HeavySnapshot sCur = eng.snapshot();
+            const double tCur = eng.simTimeSeconds();
+            glm::dvec3 rCur, vCur;
+            relVecs(sCur, rCur, vCur);
+            const double rdotvCur = glm::dot(rCur, vCur);
+
+            if (rdotvPrev < 0.0 && rdotvCur >= 0.0) {
+                if (crossings == 0) {
+                    bisectPerihelion(sPrev, tPrev, sp.dtSeconds, rel, sCross0, tCross0);
+                } else if (crossings == targetOrbits) {
+                    bisectPerihelion(sPrev, tPrev, sp.dtSeconds, rel, sCrossN, tCrossN);
+                    break;
+                }
+                ++crossings;
+            }
+            sPrev = sCur;
+            tPrev = tCur;
+            rdotvPrev = rdotvCur;
+        }
+
+        glm::dvec3 r0, v0, rN, vN;
+        relVecs(sCross0, r0, v0);
+        relVecs(sCrossN, rN, vN);
+        const glm::dvec3 u0 = glm::normalize(r0);
+        const glm::dvec3 h0 = glm::normalize(glm::cross(r0, v0));
+        const glm::dvec3 w0 = glm::cross(h0, u0);
+        const glm::dvec3 uN = glm::normalize(rN);
+        const double dOmega = std::atan2(glm::dot(uN, w0), glm::dot(uN, u0));
+        return dOmega * ARCSEC_PER_RAD * (JULIAN_CENTURY_SEC / (tCrossN - tCross0));
+    };
+
+    rep.rateEihArcsecCy = measureRate(true);
+    rep.rate0pnArcsecCy = measureRate(false);
+    rep.net1pnArcsecCy  = rep.rateEihArcsecCy - rep.rate0pnArcsecCy;
+    rep.relErrPct = (rep.analyticalArcsecCy > 0.0)
+        ? (100.0 * std::abs(rep.net1pnArcsecCy - rep.analyticalArcsecCy) / rep.analyticalArcsecCy)
+        : 0.0;
+    return rep;
+}
+
+std::vector<int> buildParentIndices(const std::vector<HeavyBodyDesc>& heavy) {
+    const int M = static_cast<int>(heavy.size());
+    std::vector<int> pIdx(M, -1);
+    for (int i = 0; i < M; ++i) {
+        for (int j = 0; j < M; ++j) {
+            if (j != i && heavy[i].parent == heavy[j].name) {
+                pIdx[i] = j;
+                break;
+            }
+        }
+    }
+    return pIdx;
+}
+
+void maybeApplyEpochCSV(std::vector<HeavyBodyDesc>& heavy, const std::string& epochCsvPath) {
+    if (epochCsvPath.empty()) return;
+    const int nLoaded = applyHorizonsEpochCSV(heavy, epochCsvPath);
+    if (nLoaded < 0) {
+        std::fprintf(stderr, "[Horizons Epoch] WARNING: Could not open '%s' (using default J2000.0 payload)\n",
+                     epochCsvPath.c_str());
+    } else {
+        std::printf("[Horizons Epoch] Loaded %d body states from %s\n\n", nLoaded, epochCsvPath.c_str());
+    }
+}
+
+int runTimeReversalCLI(const std::string& epochCsvPath) {
+    cudaDeviceProp prop{};
+    cudaGetDeviceProperties(&prop, 0);
+    std::printf("====================================================================\n");
+    std::printf("SUBSTRATE LOGISTICS - EIH 1PN SYMPLECTIC TIME-REVERSAL & PRECESSION\n");
+    std::printf("GPU: %s (Compute %d.%d, %.0f MB VRAM)\n",
+                prop.name, prop.major, prop.minor, prop.totalGlobalMem / (1024.0 * 1024.0));
+    std::printf("====================================================================\n\n");
+
+    auto heavy = buildHeavyBodies();
+    maybeApplyEpochCSV(heavy, epochCsvPath);
+    ParticleSet emptyPs;
+    SubstrateEngine engine;
+    engine.load(heavy, emptyPs, true);
+    engine.requestSnapshot();
+    const auto s0 = engine.snapshot();
+
+    StepParams sp;
+    sp.dtSeconds = 21600.0;
+    sp.substeps = 20;
+    sp.relativistic = true;
+    sp.precision = Precision::FP64;
+
+    const double E0 = engine.newtonianEnergy(s0, sp.relativistic);
+    const double L0 = engine.angularMomentumMag(s0, sp.relativistic);
+    double P0x = 0.0, P0y = 0.0, P0z = 0.0;
+    engine.canonicalMomentum(s0, sp.relativistic, P0x, P0y, P0z);
+    double mTot = 0.0;
+    for (double m : engine.mass()) mTot += m;
+
+    constexpr int YEAR_STEPS = 365 * 4 + 1;
+    for (int i = 0; i < YEAR_STEPS; ++i) engine.step(sp, i == YEAR_STEPS - 1);
+    const auto s1 = engine.snapshot();
+    const double E1 = engine.newtonianEnergy(s1, sp.relativistic);
+    const double L1 = engine.angularMomentumMag(s1, sp.relativistic);
+    double P1x = 0.0, P1y = 0.0, P1z = 0.0;
+    engine.canonicalMomentum(s1, sp.relativistic, P1x, P1y, P1z);
+    const double dPMtot = std::sqrt((P1x - P0x) * (P1x - P0x) + (P1y - P0y) * (P1y - P0y) + (P1z - P0z) * (P1z - P0z)) / mTot;
+
+    const auto tr = runTimeReversalFromState(engine, s0, YEAR_STEPS, sp);
+    const auto mp = runMercury2BodyPrecessionProof(heavy);
+
+    std::printf("[1-Julian-Year EIH 1PN + Gyro J2 Symplectic Time-Reversal Proof (55 Heavy Bodies)]\n");
+    std::printf("  1-Yr Rel. Energy Drift (E_EIH+U_J2): %.3e\n", std::abs((E1 - E0) / E0));
+    std::printf("  1-Yr Rel. AngMom Drift (L_EIH+S)   : %.3e\n", std::abs((L1 - L0) / L0));
+    std::printf("  1-Yr Canonical |dP_EIH| / M_tot    : %.3e m/s\n", dPMtot);
+    std::printf("  Max Position Return Error (+1Y/-1Y): %.4e m (%.3e AU, worst: %s)\n",
+                tr.maxPosErrM, tr.maxPosErrM / AU, heavy[tr.worstPosIdx].name.c_str());
+    std::printf("  Max Velocity Return Error (+1Y/-1Y): %.4e m/s\n", tr.maxVelErrMs);
+    std::printf("  Max Spin-Pole Return Error         : %.4e arcsec (final t = %.3f s)\n\n",
+                tr.maxSpinErrArcsec, tr.finalTimeSec);
+
+    std::printf("[Live 2-Body Mercury EIH Perihelion Precession Proof (%d Orbits, dt = T/400, Bisection)]\n",
+                mp.orbitsMeasured);
+    std::printf("  Measured EIH (1PN) Rate            : %.4f arcsec/cy\n", mp.rateEihArcsecCy);
+    std::printf("  Measured 0PN Baseline Rate         : %.4f arcsec/cy\n", mp.rate0pnArcsecCy);
+    std::printf("  Live Measured 1PN EIH Advance      : %.4f arcsec/cy (Analytical K_OMEGA GR: %.4f arcsec/cy, err = %.4f%%)\n",
+                mp.net1pnArcsecCy, mp.analyticalArcsecCy, mp.relErrPct);
+    return 0;
+}
+
+// ---------------------------------------------------------------------------
+// Headless Publication-Ready Scientific CSV Export Pipeline (--export-csv)
+// ---------------------------------------------------------------------------
+int runExportCsvCLI(const std::string& outDir, double years, double dtHours,
+                    size_t numParticles, const std::string& epochCsvPath) {
+    cudaDeviceProp prop{};
+    cudaGetDeviceProperties(&prop, 0);
+    std::printf("====================================================================\n");
+    std::printf("SUBSTRATE LOGISTICS - SCIENTIFIC CSV EXPORT PIPELINE\n");
+    std::printf("GPU: %s (Compute %d.%d, %.0f MB VRAM)\n",
+                prop.name, prop.major, prop.minor, prop.totalGlobalMem / (1024.0 * 1024.0));
+    std::printf("====================================================================\n\n");
+
+    auto heavy = buildHeavyBodies();
+    maybeApplyEpochCSV(heavy, epochCsvPath);
+    const auto parentIdx = buildParentIndices(heavy);
+    const int M = static_cast<int>(heavy.size());
+
+    auto particles = buildParticles(numParticles, 42, &heavy);
+    auto satRings  = buildSaturnRings(40000, heavy);
+    SubstrateEngine engine;
+    engine.load(heavy, particles, true, &satRings);
+    engine.requestSnapshot();
+    const HeavySnapshot s0 = engine.snapshot();
+
+    StepParams sp;
+    sp.dtSeconds = std::max(dtHours, 0.05) * 3600.0;
+    sp.substeps = 20;
+    sp.relativistic = true;
+    sp.precision = Precision::FP64;
+
+    const int idxSun     = std::max(0, findBodyIndex(heavy, "Sun"));
+    const int idxMercury = findBodyIndex(heavy, "Mercury");
+    const int idxEarth   = findBodyIndex(heavy, "Earth");
+    const int idxJupiter = findBodyIndex(heavy, "Jupiter");
+
+    const double E0 = engine.newtonianEnergy(s0, sp.relativistic);
+    const double L0 = engine.angularMomentumMag(s0, sp.relativistic);
+    double P0x = 0.0, P0y = 0.0, P0z = 0.0;
+    engine.canonicalMomentum(s0, sp.relativistic, P0x, P0y, P0z);
+    double mTot = 0.0;
+    for (double m : engine.mass()) mTot += m;
+
+    constexpr double RAD2DEG = 180.0 / PI_CONST;
+    constexpr double ARCSEC_PER_RAD = (180.0 * 3600.0) / PI_CONST;
+    double prevEarthPhi = 0.0;
+    double cumEarthPrecRad = 0.0;
+    if (idxEarth >= 0 && s0.spinAxis.size() == static_cast<size_t>(3 * M)) {
+        prevEarthPhi = std::atan2(s0.spinAxis[3 * idxEarth + 1], s0.spinAxis[3 * idxEarth + 0]);
+    }
+
+    AstroEventTracker tracker;
+    tracker.reset(M);
+    tracker.update(s0, heavy, parentIdx, engine);
+
+    std::vector<ConservationSample> samples;
+    auto pushSample = [&](const HeavySnapshot& s) {
+        ConservationSample cs{};
+        cs.simYear = (s.simTimeSeconds / 86400.0) / 365.25;
+        const double E = engine.newtonianEnergy(s, sp.relativistic);
+        const double L = engine.angularMomentumMag(s, sp.relativistic);
+        double Px = 0.0, Py = 0.0, Pz = 0.0;
+        engine.canonicalMomentum(s, sp.relativistic, Px, Py, Pz);
+        cs.relEnergyDrift = (std::abs(E0) > 1e-30) ? std::abs((E - E0) / E0) : 0.0;
+        cs.relAngMomDrift = (std::abs(L0) > 1e-30) ? std::abs((L - L0) / L0) : 0.0;
+        cs.barycenterDriftMs = (mTot > 0.0)
+            ? std::sqrt((Px - P0x) * (Px - P0x) + (Py - P0y) * (Py - P0y) + (Pz - P0z) * (Pz - P0z)) / mTot
+            : 0.0;
+        if (idxEarth >= 0 && s.spinAxis.size() == static_cast<size_t>(3 * M)) {
+            const double sx = s.spinAxis[3 * idxEarth + 0];
+            const double sy = s.spinAxis[3 * idxEarth + 1];
+            const double sz = s.spinAxis[3 * idxEarth + 2];
+            cs.earthObliquityDeg = std::acos(std::clamp(sz, -1.0, 1.0)) * RAD2DEG;
+            const double curPhi = std::atan2(sy, sx);
+            double dPhi = curPhi - prevEarthPhi;
+            while (dPhi >  PI_CONST) dPhi -= 2.0 * PI_CONST;
+            while (dPhi < -PI_CONST) dPhi += 2.0 * PI_CONST;
+            cumEarthPrecRad += dPhi;
+            prevEarthPhi = curPhi;
+            cs.earthPrecessionArcsec = cumEarthPrecRad * ARCSEC_PER_RAD;
+        }
+        if (idxMercury >= 0) {
+            const auto mk = computeKeplerElements(idxMercury, idxSun, s, engine);
+            cs.mercuryArgPeriDeg = mk.argPeri_deg;
+        }
+        samples.push_back(cs);
+    };
+
+    const int totalSteps = std::max(1, static_cast<int>(std::llround((years * 365.25 * 24.0) / dtHours)));
+    const int stepsPerDay = std::max(1, static_cast<int>(std::llround(24.0 / dtHours)));
+    samples.reserve(static_cast<size_t>(totalSteps / stepsPerDay) + 4);
+    pushSample(s0);
+
+    std::printf("Integrating %.3f Julian years (%d steps @ dt = %.2f h, substeps = %d, FP64 EIH + %zu belt + 40,000 rings)...\n",
+                years, totalSteps, dtHours, sp.substeps, numParticles);
+
+    HeavySnapshot finalSnap = s0;
+    for (int step = 1; step <= totalSteps; ++step) {
+        engine.step(sp, true);
+        const HeavySnapshot& s = engine.snapshot();
+        tracker.update(s, heavy, parentIdx, engine);
+        if (step % stepsPerDay == 0 || step == totalSteps) {
+            pushSample(s);
+        }
+        if (step == totalSteps) finalSnap = s;
+    }
+
+    RingStats ringStats{};
+    engine.computeRingStats(ringStats);
+    BeltStats beltStats{};
+    double aJup = 5.202887;
+    if (idxJupiter >= 0) {
+        const auto jk = computeKeplerElements(idxJupiter, idxSun, finalSnap, engine);
+        if (jk.bound && jk.a_AU > 0.1) aJup = jk.a_AU;
+    }
+    engine.computeBeltStats(beltStats, aJup);
+
+    const auto summary = exportTelemetryCSV(
+        outDir, samples, ringStats, tracker.events, finalSnap, heavy, parentIdx, engine, sp.relativistic);
+    if (!summary.ok) {
+        std::fprintf(stderr, "CSV Export Error: %s\n", summary.errorMsg.c_str());
+        return 1;
+    }
+
+    std::printf("\n[CSV Export Complete -> %s]\n", summary.outDir.c_str());
+    std::printf("  1. conservation_and_precession.csv : %zu rows (final dE/E = %.3e, dL/L = %.3e, Earth prec = %+.2f arcsec)\n",
+                summary.conservationRows,
+                samples.back().relEnergyDrift, samples.back().relAngMomDrift, samples.back().earthPrecessionArcsec);
+    std::printf("  2. saturn_ring_profile.csv         : %zu bins (bound = %u, escaped = %u, <r> = %.0f km, <e> = %.4f)\n",
+                summary.ringRows, ringStats.boundCount, ringStats.escapedCount,
+                ringStats.meanRadiusKm, ringStats.meanEcc);
+    std::printf("  3. close_encounters.csv            : %zu events logged (Periapsis + Planetary Flybys)\n",
+                summary.eventRows);
+    std::printf("  4. body_ephemeris_summary.csv      : %zu coupled heavy bodies\n", summary.bodyRows);
+    std::printf("  GPU Belt Stats Check               : %u bound (%u asteroidal, <e> = %.4f, <i> = %.2f deg)\n",
+                beltStats.boundCount, beltStats.asteroidalCount, beltStats.meanEcc, beltStats.meanIncDeg);
+    return 0;
+}
+
+// ---------------------------------------------------------------------------
 // Headless Benchmark & Manuscript Verification Suite
 // ---------------------------------------------------------------------------
-int runBenchmarkSuite() {
+int runBenchmarkSuite(const std::string& epochCsvPath) {
     cudaDeviceProp prop{};
     cudaGetDeviceProperties(&prop, 0);
     std::printf("====================================================================\n");
@@ -141,15 +567,26 @@ int runBenchmarkSuite() {
                 prop.name, prop.major, prop.minor, prop.totalGlobalMem / (1024.0 * 1024.0));
     std::printf("====================================================================\n\n");
 
-    const auto heavy = buildHeavyBodies();
+    auto heavy = buildHeavyBodies();
+    maybeApplyEpochCSV(heavy, epochCsvPath);
     SubstrateEngine engine;
 
-    // 1. Theoretical Manuscript Audit + 1-Year Symplectic Invariance
+    // 1. Theoretical Manuscript Audit + 1-Year Symplectic Invariance + Live Gyro Precession & 40k Saturn Rings
     {
-        auto particles = buildParticles(3000);
-        engine.load(heavy, particles, true);
+        auto particles = buildParticles(3000, 42, &heavy);
+        auto satRings  = buildSaturnRings(40000, heavy);
+        engine.load(heavy, particles, true, &satRings);
+        if (engine.isCooperativeHeavy()) {
+            std::printf("[Heavy Kernel Mode: Cooperative Multi-SM (%zu blocks x 32 threads)]\n\n", heavy.size());
+        } else {
+            std::printf("[Heavy Kernel Mode: Single-Block Fallback (1 block x %zu threads)]\n\n",
+                        ((heavy.size() + 31) / 32) * 32);
+        }
         engine.requestSnapshot();
         const auto s0 = engine.snapshot();
+
+        std::vector<double> ringPos0;
+        engine.copyRingPositions(ringPos0);
 
         StepParams sp;
         sp.dtSeconds = 21600.0;
@@ -158,7 +595,11 @@ int runBenchmarkSuite() {
         sp.precision = Precision::FP64;
 
         const double E0 = engine.newtonianEnergy(s0, sp.relativistic);
-        const double L0 = engine.angularMomentumMag(s0);
+        const double L0 = engine.angularMomentumMag(s0, sp.relativistic);
+        double P0x = 0.0, P0y = 0.0, P0z = 0.0;
+        engine.canonicalMomentum(s0, sp.relativistic, P0x, P0y, P0z);
+        double mTotHeavy = 0.0;
+        for (double m : engine.mass()) mTotHeavy += m;
 
         const int idxSun      = findBodyIndex(heavy, "Sun");
         const int idxMercury  = findBodyIndex(heavy, "Mercury");
@@ -169,6 +610,7 @@ int runBenchmarkSuite() {
         const int idxSaturn   = findBodyIndex(heavy, "Saturn");
         const int idxOumuamua = findBodyIndex(heavy, "1I/'Oumuamua");
 
+        const auto sunAud     = computeSubstrateAudit(idxSun, -1, s0, KeplerElements{}, engine, sp.relativistic);
         const auto earthKep0  = computeKeplerElements(idxEarth, idxSun, s0, engine);
         const auto earthDom0  = computeDomainRadii(idxEarth, idxSun, heavy, earthKep0, engine);
         const auto earthAud   = computeSubstrateAudit(idxEarth, idxSun, s0, earthKep0, engine, sp.relativistic);
@@ -193,6 +635,9 @@ int runBenchmarkSuite() {
         std::printf("  Coupled Heavy Bodies              : %zu (Sun, 8 Planets, 23 Moons, 23 Dwarf/Centaur/NEA/Trojan/Comet/ISO)\n",
                     heavy.size());
         std::printf("  Exact C_delta                     : %.12e  ((sqrt(5) - 2) / 500)\n", C_DELTA);
+        std::printf("  Exact Closed-Form T_Omega         : %.10e  ((400/3)*50^10 / (1 + C_delta))\n", T_OMEGA);
+        std::printf("  Exact Derived K_Omega             : %.10e m^3/(node*s^2) (K_Omega/m_p = %.6e)\n",
+                    K_OMEGA, K_OMEGA / M_P);
         std::printf("  Linear Drag sqrt(C_d)             : %.12f  (Void Om_m = %.6f, Global Om_m = %.6f)\n",
                     SQRT_C_DELTA, OMEGA_M_VOID, OMEGA_M_GLOBAL);
         std::printf("  Stagnation Operators C_d^(+-1/4)  : %.7f / %.7f\n",
@@ -221,8 +666,8 @@ int runBenchmarkSuite() {
         std::printf("  Earth River-Metric q_rot / J2     : q = %.5f | J2 = %.4e (1/f = %.1f; Obs: 298.3)\n",
                     earthAud.riverCentrifugalQ, earthAud.derivedJ2,
                     (earthAud.polarFlatteningF > 0.0) ? (1.0 / earthAud.polarFlatteningF) : 0.0);
-        std::printf("  Jupiter / Saturn Derived J2       : J2_Jup = %.4e (Obs: 1.470e-2) | J2_Sat = %.4e (Obs: 1.629e-2)\n",
-                    jupAud.derivedJ2, satAud.derivedJ2);
+        std::printf("  Sun / Jupiter / Saturn Derived J2 : J2_Sun = %+.4e (Obs: +2.0e-7) | J2_Jup = %.4e | J2_Sat = %.4e\n",
+                    sunAud.derivedJ2, jupAud.derivedJ2, satAud.derivedJ2);
         std::printf("  Mercury 3:2 Spin-Orbit Period     : %.3f days     (Emergent 2/3*T_orb; Obs: 58.646 d)\n",
                     mercAud.spinPeriodHours / 24.0);
         std::printf("  Mercury 1PN Precession            : %.2f arcsec/cy (Observed GR: 42.98 arcsec/cy)\n",
@@ -253,32 +698,192 @@ int runBenchmarkSuite() {
             std::printf("\n");
         }
 
-        for (int i = 0; i < 365 * 4 + 1; ++i) {  // 1 Julian year (365.25 days)
-            engine.step(sp, i == 365 * 4);
+        constexpr int YEAR_STEPS = 365 * 4 + 1;
+        for (int i = 0; i < YEAR_STEPS; ++i) {  // 1 Julian year (365.25 days)
+            engine.step(sp, i == YEAR_STEPS - 1);
         }
         const auto s1 = engine.snapshot();
         const double E1 = engine.newtonianEnergy(s1, sp.relativistic);
-        const double L1 = engine.angularMomentumMag(s1);
+        const double L1 = engine.angularMomentumMag(s1, sp.relativistic);
+        double P1x = 0.0, P1y = 0.0, P1z = 0.0;
+        engine.canonicalMomentum(s1, sp.relativistic, P1x, P1y, P1z);
+        const double dPMtot = (mTotHeavy > 0.0)
+            ? std::sqrt((P1x - P0x) * (P1x - P0x) + (P1y - P0y) * (P1y - P0y) + (P1z - P0z) * (P1z - P0z)) / mTotHeavy
+            : 0.0;
         const double relEDrift = std::abs((E1 - E0) / E0);
         const double relLDrift = std::abs((L1 - L0) / L0);
         const auto earthKep1  = computeKeplerElements(idxEarth, idxSun, s1, engine);
         const auto phobosKep1 = computeKeplerElements(idxPhobos, idxMars, s1, engine);
 
-        // Verify GPU BeltStats kernel using Jupiter's live semi-major axis
+        // Verify GPU BeltStats kernel using Jupiter's live semi-major axis (confirm Saturn rings do NOT pollute BeltStats)
         BeltStats bs{};
         const double aJupBench = (jupKep0.bound && jupKep0.a_AU > 0.1) ? jupKep0.a_AU : 5.202887;
         engine.computeBeltStats(bs, aJupBench);
 
-        std::printf("[Physics Verification - 1 Julian Year (4th-Order PEFRL + Kahan, substeps=20)]\n");
-        std::printf("  Earth Semi-Major Axis  : %.6f AU (initial %.6f AU, e = %.5f)\n",
+        // Live Gyroscopic Spin-Axis Precession Audit (Earth, 1 Julian Year)
+        constexpr double ARCSEC_PER_RAD = (180.0 * 3600.0) / PI_CONST;
+        double earthPrecArcsecYr = 0.0;
+        double earthNutationArcsec = 0.0;
+        if (idxEarth >= 0 && s0.spinAxis.size() == static_cast<size_t>(3 * heavy.size()) &&
+            s1.spinAxis.size() == static_cast<size_t>(3 * heavy.size())) {
+            const double sx0 = s0.spinAxis[3 * idxEarth + 0];
+            const double sy0 = s0.spinAxis[3 * idxEarth + 1];
+            const double sz0 = s0.spinAxis[3 * idxEarth + 2];
+            const double sx1 = s1.spinAxis[3 * idxEarth + 0];
+            const double sy1 = s1.spinAxis[3 * idxEarth + 1];
+            const double sz1 = s1.spinAxis[3 * idxEarth + 2];
+            double dPhi = std::atan2(sy1, sx1) - std::atan2(sy0, sx0);
+            while (dPhi >  PI_CONST) dPhi -= 2.0 * PI_CONST;
+            while (dPhi < -PI_CONST) dPhi += 2.0 * PI_CONST;
+            earthPrecArcsecYr = dPhi * ARCSEC_PER_RAD;
+            const double eps0 = std::acos(std::clamp(sz0, -1.0, 1.0));
+            const double eps1 = std::acos(std::clamp(sz1, -1.0, 1.0));
+            earthNutationArcsec = (eps1 - eps0) * ARCSEC_PER_RAD;
+        }
+
+        // Saturnian Ring System & Mimas 2:1 ILR Audit (40,000 passive icy particles, 1 Julian Year)
+        const int idxMimas = findBodyIndex(heavy, "Mimas");
+        double r21_ILR_km = 0.0;
+        if (idxMimas >= 0 && idxSaturn >= 0) {
+            const auto mimasKep = computeKeplerElements(idxMimas, idxSaturn, s0, engine);
+            const double aM = mimasKep.a_m;
+            const double rSatM = engine.radius()[idxSaturn];
+            const double j2Sat = engine.j2()[idxSaturn];
+            const double nM2 = (1.0 + 1.5 * j2Sat * (rSatM / aM) * (rSatM / aM)) / (aM * aM * aM);
+            // Solve (1 + 1.5*J2*(R_S/r)^2) / r^3 = 4 * nM2 for exact J2-corrected 2:1 ILR radius
+            double r = aM * std::pow(0.5, 2.0 / 3.0);
+            for (int iter = 0; iter < 8; ++iter) {
+                const double q = rSatM / r;
+                const double f  = (1.0 + 1.5 * j2Sat * q * q) / (r * r * r) - 4.0 * nM2;
+                const double df = (-3.0 - 7.5 * j2Sat * q * q) / (r * r * r * r);
+                r -= f / df;
+            }
+            r21_ILR_km = r / 1000.0;
+        }
+
+        std::vector<double> ringPos1;
+        engine.copyRingPositions(ringPos1);
+        size_t ringStableCount = 0;
+        double sumAbsDrKm = 0.0;
+        const size_t nRings = engine.numRingParticles();
+        for (size_t i = 0; i < nRings; ++i) {
+            const double r0 = std::sqrt(ringPos0[3 * i + 0] * ringPos0[3 * i + 0] +
+                                        ringPos0[3 * i + 1] * ringPos0[3 * i + 1] +
+                                        ringPos0[3 * i + 2] * ringPos0[3 * i + 2]);
+            const double r1 = std::sqrt(ringPos1[3 * i + 0] * ringPos1[3 * i + 0] +
+                                        ringPos1[3 * i + 1] * ringPos1[3 * i + 1] +
+                                        ringPos1[3 * i + 2] * ringPos1[3 * i + 2]);
+            const double r1Km = r1 / 1000.0;
+            if (r1Km >= 60000.0 && r1Km <= 160000.0) {
+                ++ringStableCount;
+                sumAbsDrKm += std::abs(r1 - r0) / 1000.0;
+            }
+        }
+        const double meanRingDriftKm = (ringStableCount > 0) ? (sumAbsDrKm / static_cast<double>(ringStableCount)) : 0.0;
+
+        // GPU Saturn Ring Radial Density Histogram check (zero particle readback!)
+        RingStats rsBench{};
+        engine.computeRingStats(rsBench);
+        // Compare peak B-ring bin (~105,000 km -> bin ~70) vs Cassini Division trough (~119,750 km -> bin ~99)
+        float bRingPeak = 0.0f;
+        for (int b = 45; b < 90; ++b) bRingPeak = std::max(bRingPeak, rsBench.radialHist[b]);
+        float cassiniMin = 1.0e9f;
+        for (int b = 96; b <= 103; ++b) cassiniMin = std::min(cassiniMin, rsBench.radialHist[b]);
+
+        // 1-Julian-Year Symplectic Time-Reversal Proof: reverse directly from s1 back to t = 0.0!
+        const auto timeRev = runTimeReversalFromState(engine, s0, YEAR_STEPS, sp);
+        // Live 2-Body Mercury EIH Perihelion Precession Verification (10 orbits, exact r.v=0 bisection)
+        const auto mercPrec = runMercury2BodyPrecessionProof(heavy);
+
+        // Also verify 1-year 40k Saturn ring stability in Mixed mode (pure-FP32 Saturn-radius force loop)
+        engine.load(heavy, particles, true, &satRings);
+        StepParams spMixed = sp;
+        spMixed.precision = Precision::Mixed;
+        for (int i = 0; i < YEAR_STEPS; ++i) {
+            engine.step(spMixed, false);
+        }
+        std::vector<double> ringPosMixed1;
+        engine.copyRingPositions(ringPosMixed1);
+        size_t ringStableMixed = 0;
+        double sumAbsDrMixedKm = 0.0;
+        for (size_t i = 0; i < nRings; ++i) {
+            const double r0 = std::sqrt(ringPos0[3 * i + 0] * ringPos0[3 * i + 0] +
+                                        ringPos0[3 * i + 1] * ringPos0[3 * i + 1] +
+                                        ringPos0[3 * i + 2] * ringPos0[3 * i + 2]);
+            const double r1 = std::sqrt(ringPosMixed1[3 * i + 0] * ringPosMixed1[3 * i + 0] +
+                                        ringPosMixed1[3 * i + 1] * ringPosMixed1[3 * i + 1] +
+                                        ringPosMixed1[3 * i + 2] * ringPosMixed1[3 * i + 2]);
+            const double r1Km = r1 / 1000.0;
+            if (r1Km >= 60000.0 && r1Km <= 160000.0) {
+                ++ringStableMixed;
+                sumAbsDrMixedKm += std::abs(r1 - r0) / 1000.0;
+            }
+        }
+        const double meanRingDriftMixedKm = (ringStableMixed > 0) ? (sumAbsDrMixedKm / static_cast<double>(ringStableMixed)) : 0.0;
+
+        // Time 40k Saturn ring kernel step overhead directly (with vs without rings, Mixed & FP64)
+        auto timeStepsMs = [&](bool withRings, Precision prec) -> double {
+            engine.load(heavy, particles, true, withRings ? &satRings : nullptr);
+            StepParams spT = sp;
+            spT.precision = prec;
+            for (int w = 0; w < 5; ++w) engine.step(spT, false);
+            engine.synchronize();
+            cudaEvent_t e0, e1;
+            cudaEventCreate(&e0);
+            cudaEventCreate(&e1);
+            cudaEventRecord(e0, engine.stream());
+            for (int it = 0; it < 30; ++it) engine.step(spT, false);
+            cudaEventRecord(e1, engine.stream());
+            cudaEventSynchronize(e1);
+            float ms = 0.0f;
+            cudaEventElapsedTime(&ms, e0, e1);
+            cudaEventDestroy(e0);
+            cudaEventDestroy(e1);
+            return ms / 30.0;
+        };
+        const double msNoRingsMix   = timeStepsMs(false, Precision::Mixed);
+        const double msWithRingsMix = timeStepsMs(true,  Precision::Mixed);
+        const double msNoRings64    = timeStepsMs(false, Precision::FP64);
+        const double msWithRings64  = timeStepsMs(true,  Precision::FP64);
+
+        std::printf("[Physics Verification - 1 Julian Year (4th-Order PEFRL + Kahan + Full EIH 1PN + Gyro Spin, substeps=20)]\n");
+        std::printf("  Earth Semi-Major Axis   : %.6f AU (initial %.6f AU, e = %.5f)\n",
                     earthKep1.a_AU, earthKep0.a_AU, earthKep1.e);
-        std::printf("  Phobos 1-Yr Orbit      : a = %.2f km (initial %.2f km), e = %.5f (%s)\n",
+        std::printf("  Phobos 1-Yr Orbit       : a = %.2f km (initial %.2f km), e = %.5f (%s)\n",
                     phobosKep1.a_m / 1000.0, phobosKep.a_m / 1000.0, phobosKep1.e,
                     phobosKep1.bound ? "BOUND" : "UNBOUND");
-        std::printf("  Relative Energy Drift  : %.3e\n", relEDrift);
-        std::printf("  Relative AngMom Drift  : %.3e\n", relLDrift);
-        std::printf("  GPU Belt Stats Check   : %u bound (%u asteroidal, <e>=%.4f, <i>=%.2f deg)\n\n",
+        std::printf("  Rel. Energy (E_EIH+U_J2): %.3e\n", relEDrift);
+        std::printf("  Rel. AngMom (L_EIH+S)   : %.3e\n", relLDrift);
+        std::printf("  Canonical |dP_EIH|/M_tot: %.3e m/s\n", dPMtot);
+        std::printf("  Earth Gyro Precession   : %+.2f arcsec/yr retrograde | Obliquity Nutation: %+.2f arcsec\n",
+                    earthPrecArcsecYr, earthNutationArcsec);
+        std::printf("  Saturn Rings (FP64, 1Y) : %zu / %zu stable (<|dr|> = %.2f km) | Mimas 2:1 ILR = %.1f km\n",
+                    ringStableCount, nRings, meanRingDriftKm, r21_ILR_km);
+        std::printf("  Saturn Rings (Mixed, 1Y): %zu / %zu stable (<|dr|> = %.2f km)\n",
+                    ringStableMixed, nRings, meanRingDriftMixedKm);
+        std::printf("  Saturn Ring Overhead Mix: +%.3f ms/step (%.3f ms -> %.3f ms @ 3k belt + 40k rings)\n",
+                    msWithRingsMix - msNoRingsMix, msNoRingsMix, msWithRingsMix);
+        std::printf("  Saturn Ring Overhead 64 : +%.3f ms/step (%.3f ms -> %.3f ms @ 3k belt + 40k rings)\n",
+                    msWithRings64 - msNoRings64, msNoRings64, msWithRings64);
+        std::printf("  GPU Ring Stats Check    : %u bound / %u escaped (<r> = %.0f km, <e> = %.4f, B-peak = %.0f vs Cassini = %.0f/bin)\n",
+                    rsBench.boundCount, rsBench.escapedCount, rsBench.meanRadiusKm, rsBench.meanEcc,
+                    bRingPeak, cassiniMin);
+        std::printf("  GPU Belt Stats Check    : %u bound (%u asteroidal, <e>=%.4f, <i>=%.2f deg)\n\n",
                     bs.boundCount, bs.asteroidalCount, bs.meanEcc, bs.meanIncDeg);
+
+        std::printf("[Symplectic Time-Reversal Proof (+1 Yr -> -1 Yr, 55 Heavy Bodies, Full EIH + Gyro J2)]\n");
+        std::printf("  Max Position Return Err : %.4e m (%.3e AU, worst: %s)\n",
+                    timeRev.maxPosErrM, timeRev.maxPosErrM / AU, heavy[timeRev.worstPosIdx].name.c_str());
+        std::printf("  Max Velocity Return Err : %.4e m/s\n", timeRev.maxVelErrMs);
+        std::printf("  Max Spin-Pole Return Err: %.4e arcsec (final t = %.3f s)\n\n",
+                    timeRev.maxSpinErrArcsec, timeRev.finalTimeSec);
+
+        std::printf("[Live 2-Body Mercury EIH Perihelion Precession Proof (%d Orbits, dt = T/400, r.v = 0 Bisection)]\n",
+                    mercPrec.orbitsMeasured);
+        std::printf("  Measured EIH (1PN) Rate : %.4f arcsec/cy  |  0PN Baseline: %.4f arcsec/cy\n",
+                    mercPrec.rateEihArcsecCy, mercPrec.rate0pnArcsecCy);
+        std::printf("  Live 1PN Advance (EIH-0): %.4f arcsec/cy  |  Analytical K_OMEGA GR: %.4f arcsec/cy (err = %.4f%%)\n\n",
+                    mercPrec.net1pnArcsecCy, mercPrec.analyticalArcsecCy, mercPrec.relErrPct);
 
         // Extreme CFL Torture Test: Macro dt = 48.0 hours, UI substeps = 1 (1 Julian Year = 183 steps)
         engine.load(heavy, particles, true);
@@ -372,16 +977,41 @@ int main(int argc, char** argv) {
 
     size_t initialParticles = 100000;
     int maxFrames = 0;
+    bool runBench = false;
+    bool runTimeRev = false;
+    std::string exportCsvDir;
+    std::string epochCsvPath;
+    double exportYears = 1.0;
+    double exportDtHours = 6.0;
+
     for (int i = 1; i < argc; ++i) {
         if (std::strcmp(argv[i], "--benchmark") == 0) {
-            return runBenchmarkSuite();
-        }
-        if (std::strcmp(argv[i], "--smoke-test") == 0) {
+            runBench = true;
+        } else if (std::strcmp(argv[i], "--time-reverse") == 0) {
+            runTimeRev = true;
+        } else if (std::strcmp(argv[i], "--smoke-test") == 0) {
             maxFrames = 30;
-        }
-        if (std::strcmp(argv[i], "--particles") == 0 && i + 1 < argc) {
+        } else if (std::strcmp(argv[i], "--particles") == 0 && i + 1 < argc) {
             initialParticles = static_cast<size_t>(std::strtoull(argv[++i], nullptr, 10));
+        } else if (std::strcmp(argv[i], "--export-csv") == 0 && i + 1 < argc) {
+            exportCsvDir = argv[++i];
+        } else if (std::strcmp(argv[i], "--years") == 0 && i + 1 < argc) {
+            exportYears = std::max(0.01, std::strtod(argv[++i], nullptr));
+        } else if (std::strcmp(argv[i], "--dt-hours") == 0 && i + 1 < argc) {
+            exportDtHours = std::max(0.05, std::strtod(argv[++i], nullptr));
+        } else if (std::strcmp(argv[i], "--epoch-csv") == 0 && i + 1 < argc) {
+            epochCsvPath = argv[++i];
         }
+    }
+
+    if (runBench) {
+        return runBenchmarkSuite(epochCsvPath);
+    }
+    if (runTimeRev) {
+        return runTimeReversalCLI(epochCsvPath);
+    }
+    if (!exportCsvDir.empty()) {
+        return runExportCsvCLI(exportCsvDir, exportYears, exportDtHours, initialParticles, epochCsvPath);
     }
 
     if (!glfwInit()) {
@@ -434,18 +1064,13 @@ int main(int argc, char** argv) {
     ImGui_ImplOpenGL3_Init("#version 460 core");
 
     // Initialize Physics & Renderer
-    const auto heavyDescs = buildHeavyBodies();
+    auto heavyDescs = buildHeavyBodies();
+    maybeApplyEpochCSV(heavyDescs, epochCsvPath);
     const int numHeavy = static_cast<int>(heavyDescs.size());
-
-    std::vector<int> parentIdx(numHeavy, -1);
-    for (int i = 0; i < numHeavy; ++i) {
-        for (int j = 0; j < numHeavy; ++j) {
-            if (heavyDescs[i].parent == heavyDescs[j].name) {
-                parentIdx[i] = j;
-                break;
-            }
-        }
-    }
+    const auto parentIdx = buildParentIndices(heavyDescs);
+    const int idxSunGui     = std::max(0, findBodyIndex(heavyDescs, "Sun"));
+    const int idxMercuryGui = findBodyIndex(heavyDescs, "Mercury");
+    const int idxEarthGui   = findBodyIndex(heavyDescs, "Earth");
 
     SubstrateEngine engine;
     Renderer renderer;
@@ -468,14 +1093,26 @@ int main(int argc, char** argv) {
     size_t activeParticleCount = initialParticles;
     auto reloadPayload = [&](size_t numParticles) {
         activeParticleCount = numParticles;
-        ParticleSet ps = buildParticles(numParticles);
-        engine.load(heavyDescs, ps, true);
-        renderer.setPayload(heavyDescs, ps);
+        ParticleSet ps = buildParticles(numParticles, 42, &heavyDescs);
+        ParticleSet satRings = buildSaturnRings(40000, heavyDescs);
+        engine.load(heavyDescs, ps, true, &satRings);
+        renderer.setPayload(heavyDescs, ps, &satRings);
         for (auto& dq : relTrailsAU) dq.clear();
         engine.requestSnapshot();
         const auto& s0 = engine.snapshot();
         telemetryUI.conservation.reset(engine.newtonianEnergy(s0, stepParams.relativistic),
-                                       engine.angularMomentumMag(s0));
+                                       engine.angularMomentumMag(s0, stepParams.relativistic));
+        engine.canonicalMomentum(s0, stepParams.relativistic,
+                                 telemetryUI.baseMomX, telemetryUI.baseMomY, telemetryUI.baseMomZ);
+        telemetryUI.conservationLog.clear();
+        telemetryUI.ringStats = RingStats{};
+        telemetryUI.eventTracker.reset(numHeavy);
+        telemetryUI.eventTracker.update(s0, heavyDescs, parentIdx, engine);
+        if (idxEarthGui >= 0 && s0.spinAxis.size() == static_cast<size_t>(3 * numHeavy)) {
+            telemetryUI.initialEarthSpinPhi = std::atan2(s0.spinAxis[3 * idxEarthGui + 1],
+                                                         s0.spinAxis[3 * idxEarthGui + 0]);
+            telemetryUI.hasInitialEarthSpinPhi = true;
+        }
     };
     reloadPayload(initialParticles);
 
@@ -490,6 +1127,7 @@ int main(int argc, char** argv) {
     telemetryUI.coarseProbeAU = engine.heliopauseRadiusAU();
 
     bool isPaused = false;
+    bool reverseTime = false;
     bool showLabels = true;
     int stepsPerFrame = 2;
     int targetIdx = std::max(0, findBodyIndex(heavyDescs, "Earth"));  // Earth by default (highlights Paper 1 Sec. 3 & Sec. 8 benchmarks immediately!)
@@ -563,9 +1201,12 @@ int main(int argc, char** argv) {
 
         engine.beginTimer();
         if (!isPaused) {
+            StepParams activeParams = stepParams;
+            activeParams.dtSeconds = reverseTime ? -std::abs(stepParams.dtSeconds)
+                                                 :  std::abs(stepParams.dtSeconds);
             for (int s = 0; s < stepsPerFrame; ++s) {
                 const bool snapThisStep = (s == stepsPerFrame - 1);
-                engine.step(stepParams, snapThisStep);
+                engine.step(activeParams, snapThisStep);
             }
         } else {
             engine.requestSnapshot();
@@ -573,16 +1214,58 @@ int main(int argc, char** argv) {
 
         float4* d_heavyVbo = nullptr;
         float4* d_particleVbo = nullptr;
-        renderer.mapForCuda(engine.stream(), &d_heavyVbo, &d_particleVbo);
-        engine.writeRenderPositions(d_heavyVbo, d_particleVbo, originIdx);
+        float4* d_ringVbo = nullptr;
+        renderer.mapForCuda(engine.stream(), &d_heavyVbo, &d_particleVbo, &d_ringVbo);
+        engine.writeRenderPositions(d_heavyVbo, d_particleVbo, originIdx, d_ringVbo);
         renderer.unmapFromCuda(engine.stream());
         engine.endTimer();
 
         const HeavySnapshot& snap = engine.snapshot();
 
-        if (!isPaused && (++conservationSampleCounter % 6 == 0)) {
-            telemetryUI.conservation.push(engine.newtonianEnergy(snap, stepParams.relativistic),
-                                          engine.angularMomentumMag(snap));
+        if (!isPaused) {
+            telemetryUI.eventTracker.update(snap, heavyDescs, parentIdx, engine);
+            if (++conservationSampleCounter % 6 == 0) {
+                const double curE = engine.newtonianEnergy(snap, stepParams.relativistic);
+                const double curL = engine.angularMomentumMag(snap, stepParams.relativistic);
+                telemetryUI.conservation.push(curE, curL);
+
+                ConservationSample cs{};
+                cs.simYear = (snap.simTimeSeconds / 86400.0) / 365.25;
+                cs.relEnergyDrift = telemetryUI.conservation.relEnergyDrift.empty()
+                                        ? 0.0
+                                        : static_cast<double>(telemetryUI.conservation.relEnergyDrift.back());
+                cs.relAngMomDrift = telemetryUI.conservation.relAngMomDrift.empty()
+                                        ? 0.0
+                                        : static_cast<double>(telemetryUI.conservation.relAngMomDrift.back());
+                double Px = 0.0, Py = 0.0, Pz = 0.0;
+                engine.canonicalMomentum(snap, stepParams.relativistic, Px, Py, Pz);
+                double mTot = 0.0;
+                for (double m : engine.mass()) mTot += m;
+                cs.barycenterDriftMs = (mTot > 0.0)
+                    ? std::sqrt((Px - telemetryUI.baseMomX) * (Px - telemetryUI.baseMomX) +
+                                (Py - telemetryUI.baseMomY) * (Py - telemetryUI.baseMomY) +
+                                (Pz - telemetryUI.baseMomZ) * (Pz - telemetryUI.baseMomZ)) / mTot
+                    : 0.0;
+                if (idxEarthGui >= 0 && snap.spinAxis.size() == static_cast<size_t>(3 * numHeavy)) {
+                    const double sx = snap.spinAxis[3 * idxEarthGui + 0];
+                    const double sy = snap.spinAxis[3 * idxEarthGui + 1];
+                    const double sz = snap.spinAxis[3 * idxEarthGui + 2];
+                    cs.earthObliquityDeg = std::acos(std::clamp(sz, -1.0, 1.0)) * (180.0 / PI_CONST);
+                    if (telemetryUI.hasInitialEarthSpinPhi) {
+                        double dPhi = std::atan2(sy, sx) - telemetryUI.initialEarthSpinPhi;
+                        while (dPhi >  PI_CONST) dPhi -= 2.0 * PI_CONST;
+                        while (dPhi < -PI_CONST) dPhi += 2.0 * PI_CONST;
+                        cs.earthPrecessionArcsec = dPhi * ((180.0 * 3600.0) / PI_CONST);
+                    }
+                }
+                if (idxMercuryGui >= 0) {
+                    cs.mercuryArgPeriDeg = computeKeplerElements(idxMercuryGui, idxSunGui, snap, engine).argPeri_deg;
+                }
+                if (telemetryUI.conservationLog.size() >= 4000) {
+                    telemetryUI.conservationLog.erase(telemetryUI.conservationLog.begin());
+                }
+                telemetryUI.conservationLog.push_back(cs);
+            }
         }
 
         // 2. Build Camera, Parent-Relative Orbit Trails, & 3D Boundary Shells
@@ -854,7 +1537,7 @@ int main(int argc, char** argv) {
 
         if (ImGui::Begin("Substrate Logistics Control Center")) {
             const float gpuMs = engine.lastTimedMs();
-            const size_t totalObjs = engine.numParticles() + static_cast<size_t>(engine.numHeavy());
+            const size_t totalObjs = engine.numParticles() + engine.numRingParticles() + static_cast<size_t>(engine.numHeavy());
 
             // Prominent toggle button for the Floating Telemetry Window
             const ImVec4 btnCol = telemetryUI.showWindow
@@ -879,6 +1562,10 @@ int main(int argc, char** argv) {
                 ImGui::Text("VRAM (Physics State): %.2f MB", engine.deviceBytes() / (1024.0 * 1024.0));
                 const double years = (snap.simTimeSeconds / 86400.0) / 365.25;
                 ImGui::Text("Cosmological Time: %.3f Years", years);
+                if (reverseTime) {
+                    ImGui::SameLine();
+                    ImGui::TextColored(ImVec4(1.0f, 0.72f, 0.18f, 1.0f), "[TIME REVERSED]");
+                }
             }
 
             if (ImGui::CollapsingHeader("Quick Target & Camera Framing", ImGuiTreeNodeFlags_DefaultOpen)) {
@@ -939,6 +1626,15 @@ int main(int argc, char** argv) {
                                              : (60.0 * engine.radius()[targetIdx]);
                     camera.distanceAU = std::clamp(static_cast<float>(spanM / AU), 5.0e-5f, 50.0f);
                 }
+                if (ImGui::Button("Zoom: Saturn & Cassini Rings", ImVec2(-1.0f, 0.0f))) {
+                    const int satIdx = findBodyIndex(heavyDescs, "Saturn");
+                    if (satIdx >= 0) targetIdx = satIdx;
+                    camera.lockTarget = true;
+                    renderSettings.logScale = false;
+                    renderSettings.showSaturnRings = true;
+                    camera.panOffsetAU = glm::vec3(0.0f);
+                    camera.distanceAU = 0.0028f;
+                }
                 if (ImGui::Button("Zoom: Heliosphere (TS 89.4 AU / HP 120.7 AU)", ImVec2(-1.0f, 0.0f))) {
                     camera.lockTarget = false;
                     renderSettings.logScale = false;
@@ -959,6 +1655,7 @@ int main(int argc, char** argv) {
             if (ImGui::CollapsingHeader("3D Overlays & Viewport Settings", ImGuiTreeNodeFlags_DefaultOpen)) {
                 ImGui::Checkbox("Show Deconflicted 2D Labels (HUD)", &showLabels);
                 ImGui::Checkbox("Show 3D Orbit Trails", &renderSettings.showOrbitTrails);
+                ImGui::Checkbox("Show Passive Saturnian Ring System (40k)", &renderSettings.showSaturnRings);
                 ImGui::Checkbox("Show 3R / 4R / 6.784R Magnetospheric Shells", &renderSettings.showVectorChannels);
                 ImGui::Checkbox("Show Hill Sphere & Fluid Roche Limit", &renderSettings.showHillAndRoche);
                 ImGui::Checkbox("Show Lagrange Points (L1-L5) for Target", &renderSettings.showLagrangePoints);
@@ -994,9 +1691,13 @@ int main(int argc, char** argv) {
                     stepParams.precision = Precision::FP64;
                 }
 
-                if (ImGui::Checkbox("1PN Relativistic Precession", &stepParams.relativistic)) {
+                if (ImGui::Checkbox("1PN Relativistic Precession (Full EIH)", &stepParams.relativistic)) {
+                    engine.refreshCachedAccelerations(stepParams.relativistic);
                     telemetryUI.conservation.reset(engine.newtonianEnergy(snap, stepParams.relativistic),
-                                                   engine.angularMomentumMag(snap));
+                                                   engine.angularMomentumMag(snap, stepParams.relativistic));
+                }
+                if (ImGui::Checkbox("Reverse Time (dt -> -dt) [Symplectic Proof]", &reverseTime)) {
+                    engine.refreshCachedAccelerations(stepParams.relativistic);
                 }
                 ImGui::SliderInt("Macro Steps / Frame", &stepsPerFrame, 1, 12);
 
@@ -1035,8 +1736,8 @@ int main(int argc, char** argv) {
                         ++nonBgPixels;
                     }
                 }
-                std::printf("[Smoke Test] Rendered %d frames (%zu particles + %d heavy bodies)\n",
-                            frameIdx, engine.numParticles(), engine.numHeavy());
+                std::printf("[Smoke Test] Rendered %d frames (%zu belt + %zu Saturn ring particles + %d heavy bodies)\n",
+                            frameIdx, engine.numParticles(), engine.numRingParticles(), engine.numHeavy());
                 std::printf("[Smoke Test] Frame Rate: %.1f FPS | GPU Step+Interop: %.2f ms | Non-BG Pixels: %zu\n",
                             smoothFps, engine.lastTimedMs(), nonBgPixels);
                 glfwSetWindowShouldClose(window, GLFW_TRUE);

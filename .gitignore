@@ -47,6 +47,13 @@ tmpxft_*
 imgui.ini
 *.log
 
+# Generated CSV exports, fetched NASA/JPL Horizons epochs & audit output folders
+*.csv
+audit_out/
+apophis_2029*/
+csv_export*/
+export_out/
+
 # IDE & Editor local workspace files (contain machine-specific local paths)
 .vscode/
 .vs/

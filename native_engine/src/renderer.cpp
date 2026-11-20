@@ -314,13 +314,18 @@ void Renderer::destroyPayload() {
     if (m_mapped) unmapFromCuda(nullptr);
     m_heavyPos.destroy();
     m_particlePos.destroy();
+    m_ringPos.destroy();
     if (m_heavyVao) glDeleteVertexArrays(1, &m_heavyVao);
     if (m_particleVao) glDeleteVertexArrays(1, &m_particleVao);
+    if (m_satRingVao) glDeleteVertexArrays(1, &m_satRingVao);
     if (m_heavyAttr) glDeleteBuffers(1, &m_heavyAttr);
     if (m_particleAttr) glDeleteBuffers(1, &m_particleAttr);
-    m_heavyVao = m_particleVao = m_heavyAttr = m_particleAttr = 0;
+    if (m_satRingAttr) glDeleteBuffers(1, &m_satRingAttr);
+    m_heavyVao = m_particleVao = m_satRingVao = 0;
+    m_heavyAttr = m_particleAttr = m_satRingAttr = 0;
     m_numHeavy = 0;
     m_numParticles = 0;
+    m_numRings = 0;
 }
 
 void Renderer::shutdown() {
@@ -340,7 +345,8 @@ void Renderer::shutdown() {
     glDeleteProgram(m_trailProg);
 }
 
-void Renderer::setPayload(const std::vector<HeavyBodyDesc>& heavy, const ParticleSet& particles) {
+void Renderer::setPayload(const std::vector<HeavyBodyDesc>& heavy, const ParticleSet& particles,
+                          const ParticleSet* saturnRings) {
     destroyPayload();
 
     m_numHeavy = static_cast<int>(heavy.size());
@@ -364,27 +370,63 @@ void Renderer::setPayload(const std::vector<HeavyBodyDesc>& heavy, const Particl
         glNamedBufferStorage(m_particleAttr, pa.size() * sizeof(SpriteAttr), pa.data(), 0);
         m_particleVao = makeSpriteVao(m_particlePos.vbo(), m_particleAttr);
     }
+
+    m_numRings = (saturnRings != nullptr) ? saturnRings->count() : 0;
+    if (m_numRings > 0) {
+        std::vector<SpriteAttr> ra(m_numRings);
+        for (size_t i = 0; i < m_numRings; ++i) ra[i] = {saturnRings->rgba[i], saturnRings->size[i], 0.0f};
+        m_ringPos.create(m_numRings * sizeof(float4));
+        glCreateBuffers(1, &m_satRingAttr);
+        glNamedBufferStorage(m_satRingAttr, ra.size() * sizeof(SpriteAttr), ra.data(), 0);
+        m_satRingVao = makeSpriteVao(m_ringPos.vbo(), m_satRingAttr);
+    }
 }
 
-void Renderer::mapForCuda(cudaStream_t stream, float4** heavyOut, float4** particleOut) {
-    cudaGraphicsResource* res[2] = {m_heavyPos.resource(), m_particlePos.resource()};
-    const int count = m_numParticles > 0 ? 2 : 1;
+void Renderer::mapForCuda(cudaStream_t stream, float4** heavyOut, float4** particleOut, float4** ringOut) {
+    cudaGraphicsResource* res[3] = {};
+    int count = 0;
+    const int idxHeavy = count++;
+    res[idxHeavy] = m_heavyPos.resource();
+    int idxPart = -1;
+    if (m_numParticles > 0) {
+        idxPart = count++;
+        res[idxPart] = m_particlePos.resource();
+    }
+    int idxRing = -1;
+    if (m_numRings > 0) {
+        idxRing = count++;
+        res[idxRing] = m_ringPos.resource();
+    }
+
     cudaCheck(cudaGraphicsMapResources(count, res, stream), "cudaGraphicsMapResources");
     m_mapped = true;
     size_t bytes = 0;
-    cudaCheck(cudaGraphicsResourceGetMappedPointer(reinterpret_cast<void**>(heavyOut), &bytes, res[0]),
+    cudaCheck(cudaGraphicsResourceGetMappedPointer(reinterpret_cast<void**>(heavyOut), &bytes, res[idxHeavy]),
               "cudaGraphicsResourceGetMappedPointer(heavy)");
-    *particleOut = nullptr;
-    if (count == 2)
-        cudaCheck(cudaGraphicsResourceGetMappedPointer(reinterpret_cast<void**>(particleOut), &bytes, res[1]),
-                  "cudaGraphicsResourceGetMappedPointer(particles)");
+    if (particleOut) {
+        *particleOut = nullptr;
+        if (idxPart >= 0) {
+            cudaCheck(cudaGraphicsResourceGetMappedPointer(reinterpret_cast<void**>(particleOut), &bytes, res[idxPart]),
+                      "cudaGraphicsResourceGetMappedPointer(particles)");
+        }
+    }
+    if (ringOut) {
+        *ringOut = nullptr;
+        if (idxRing >= 0) {
+            cudaCheck(cudaGraphicsResourceGetMappedPointer(reinterpret_cast<void**>(ringOut), &bytes, res[idxRing]),
+                      "cudaGraphicsResourceGetMappedPointer(rings)");
+        }
+    }
 }
 
 void Renderer::unmapFromCuda(cudaStream_t stream) {
     if (!m_mapped) return;
-    cudaGraphicsResource* res[2] = {m_heavyPos.resource(), m_particlePos.resource()};
-    cudaCheck(cudaGraphicsUnmapResources(m_numParticles > 0 ? 2 : 1, res, stream),
-              "cudaGraphicsUnmapResources");
+    cudaGraphicsResource* res[3] = {};
+    int count = 0;
+    res[count++] = m_heavyPos.resource();
+    if (m_numParticles > 0) res[count++] = m_particlePos.resource();
+    if (m_numRings > 0)     res[count++] = m_ringPos.resource();
+    cudaCheck(cudaGraphicsUnmapResources(count, res, stream), "cudaGraphicsUnmapResources");
     m_mapped = false;
 }
 
@@ -509,6 +551,14 @@ void Renderer::draw(const DrawContext& ctx, const RenderSettings& s) {
         glUniform1f(uAlpha, s.particleAlpha);
         glBindVertexArray(m_particleVao);
         glDrawArraysInstanced(GL_TRIANGLE_STRIP, 0, 4, static_cast<GLsizei>(m_numParticles));
+    }
+
+    if (s.showSaturnRings && m_numRings > 0) {
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+        glUniform1f(uSize, s.particleSizeScale);
+        glUniform1f(uAlpha, 1.0f);
+        glBindVertexArray(m_satRingVao);
+        glDrawArraysInstanced(GL_TRIANGLE_STRIP, 0, 4, static_cast<GLsizei>(m_numRings));
     }
 
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);

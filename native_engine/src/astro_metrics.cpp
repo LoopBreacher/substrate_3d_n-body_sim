@@ -250,6 +250,45 @@ SubstrateBodyAudit computeSubstrateAudit(int bodyIdx, int parentIdx,
     a.polarFlatteningF = 1.5 * a.derivedJ2 + 0.5 * a.riverCentrifugalQ;
     a.spinAngMom_kgm2s = momC * engine.mass()[bodyIdx] * a.radiusM * a.radiusM * absOmegaRot;
 
+    // Live GPU spin-axis orientation & instantaneous lunisolar precession rate (arcsec/Julian yr)
+    const bool hasLiveSpin = (snap.spinAxis.size() == static_cast<size_t>(3 * engine.numHeavy()));
+    const double spX = hasLiveSpin ? snap.spinAxis[3 * bodyIdx + 0] : engine.spinAxisX()[bodyIdx];
+    const double spY = hasLiveSpin ? snap.spinAxis[3 * bodyIdx + 1] : engine.spinAxisY()[bodyIdx];
+    const double spZ = hasLiveSpin ? snap.spinAxis[3 * bodyIdx + 2] : engine.spinAxisZ()[bodyIdx];
+    a.liveObliquityDeg = std::acos(std::clamp(spZ, -1.0, 1.0)) * RAD2DEG;
+
+    if (a.tidalLockMode == 0 && a.derivedJ2 > 0.0 && momC > 0.0 && absOmegaRot > 1e-18 && a.thetaGC > 0.5) {
+        const double pCoeff = (3.0 * a.derivedJ2) / (momC * absOmegaRot);
+        double wx = 0.0, wy = 0.0, wz = 0.0;
+        const auto& pIdxs = engine.parentIndices();
+        const int M = engine.numHeavy();
+        for (int j = 0; j < M; ++j) {
+            if (j == bodyIdx) continue;
+            const bool isSolar = (parentIdx == 0 && j == 0);
+            const bool isMoon = (pIdxs[j] == bodyIdx);
+            if (!isSolar && !isMoon) continue;
+            const double muj = engine.mu()[j];
+            if (muj <= 0.0) continue;
+            const double dx = snap.pos[3 * j + 0] - snap.pos[3 * bodyIdx + 0];
+            const double dy = snap.pos[3 * j + 1] - snap.pos[3 * bodyIdx + 1];
+            const double dz = snap.pos[3 * j + 2] - snap.pos[3 * bodyIdx + 2];
+            const double r = std::max(std::sqrt(dx * dx + dy * dy + dz * dz), 1.0);
+            const double inv = 1.0 / r;
+            const double rDotS = (dx * spX + dy * spY + dz * spZ) * inv;
+            const double pScale = pCoeff * muj * inv * inv * inv * rDotS * inv;
+            wx += pScale * dx;
+            wy += pScale * dy;
+            wz += pScale * dz;
+        }
+        const double dsx = wy * spZ - wz * spY;
+        const double dsy = wz * spX - wx * spZ;
+        const double hxy2 = spX * spX + spY * spY;
+        if (hxy2 > 1e-10) {
+            const double dPhiDt = (spX * dsy - spY * dsx) / hxy2;
+            a.spinPrecessionArcsecYr = dPhiDt * ARCSEC_PER_RAD * (365.25 * 86400.0);
+        }
+    }
+
     const double eqKinLoad = (a.vEquatorial_ms * a.vEquatorial_ms) / c2;
     const double eqLagFrac = oneMinusSqrtOneMinus(eqKinLoad);
     a.clockLagEquatorExtra_ppb = eqLagFrac * 1.0e9;
@@ -456,6 +495,209 @@ LagrangePoints computeLagrangePoints(int bodyIdx, int parentIdx,
 
     lp.valid = true;
     return lp;
+}
+
+SaturnRingMarkers computeSaturnRingMarkers(const HeavySnapshot& snap,
+                                           const std::vector<HeavyBodyDesc>& descs,
+                                           const SubstrateEngine& engine) {
+    SaturnRingMarkers m{};
+    const int idxSat   = findBodyIndex(descs, "Saturn");
+    const int idxMimas = findBodyIndex(descs, "Mimas");
+    if (idxSat < 0 || idxSat >= engine.numHeavy()) return m;
+
+    const double rSatM  = engine.radius()[idxSat];
+    const double j2Sat  = engine.j2()[idxSat];
+    const double rhoSat = engine.baseDensity(idxSat) * M_P;
+    if (rSatM > 0.0 && rhoSat > 0.0) {
+        m.iceRoche_km = (2.44 * rSatM * std::cbrt(rhoSat / 900.0)) / 1000.0;
+    }
+
+    if (idxMimas >= 0 && idxMimas < engine.numHeavy()) {
+        const auto mimasKep = computeKeplerElements(idxMimas, idxSat, snap, engine);
+        if (mimasKep.bound && mimasKep.a_m > rSatM) {
+            const double aM = mimasKep.a_m;
+            const double nM2 = (1.0 + 1.5 * j2Sat * (rSatM / aM) * (rSatM / aM)) / (aM * aM * aM);
+            auto solveILR = [&](double ratioP) -> double {
+                double r = aM * std::pow(1.0 / ratioP, 2.0 / 3.0);
+                const double targetN2 = (ratioP * ratioP) * nM2;
+                for (int iter = 0; iter < 8; ++iter) {
+                    const double q = rSatM / r;
+                    const double f  = (1.0 + 1.5 * j2Sat * q * q) / (r * r * r) - targetN2;
+                    const double df = (-3.0 - 7.5 * j2Sat * q * q) / (r * r * r * r);
+                    r -= f / df;
+                }
+                return r / 1000.0;
+            };
+            m.mimas2to1_km = solveILR(2.0);
+            m.mimas3to1_km = solveILR(3.0);
+            m.valid = true;
+        }
+    }
+    return m;
+}
+
+void AstroEventTracker::reset(int numHeavy) {
+    events.clear();
+    initialized = false;
+    prevSimTime = 0.0;
+    const size_t M = (numHeavy > 0) ? static_cast<size_t>(numHeavy) : 0;
+    prevRv.assign(M, 0.0);
+    prevPairRv.assign(M * M, 0.0);
+}
+
+void AstroEventTracker::update(const HeavySnapshot& snap,
+                               const std::vector<HeavyBodyDesc>& descs,
+                               const std::vector<int>& parentIdx,
+                               const SubstrateEngine& engine) {
+    const int M = engine.numHeavy();
+    if (M <= 0 || static_cast<int>(descs.size()) < M || static_cast<int>(parentIdx.size()) < M ||
+        snap.pos.size() < static_cast<size_t>(3 * M) || snap.vel.size() < static_cast<size_t>(3 * M)) {
+        return;
+    }
+
+    if (prevRv.size() != static_cast<size_t>(M) || prevPairRv.size() != static_cast<size_t>(M) * M) {
+        reset(M);
+    }
+
+    if (initialized && snap.simTimeSeconds == prevSimTime) {
+        return;
+    }
+
+    const bool forward = (!initialized) || (snap.simTimeSeconds >= prevSimTime);
+    const double simYears = (snap.simTimeSeconds / 86400.0) / 365.25;
+    const int sunIdx = std::max(0, findBodyIndex(descs, "Sun"));
+    const int jupIdx = findBodyIndex(descs, "Jupiter");
+    const double muSun = engine.mu()[sunIdx];
+    const double mSun  = engine.mass()[sunIdx];
+
+    double aJupAU = 5.202887;
+    if (jupIdx >= 0 && jupIdx < M) {
+        const auto jupK = computeKeplerElements(jupIdx, sunIdx, snap, engine);
+        if (jupK.bound && jupK.a_AU > 0.1) aJupAU = jupK.a_AU;
+    }
+
+    auto computeTisserandTJ = [&](int bodyIdx) -> double {
+        if (muSun <= 0.0 || bodyIdx == sunIdx) return 0.0;
+        const double rx = snap.pos[3 * bodyIdx + 0] - snap.pos[3 * sunIdx + 0];
+        const double ry = snap.pos[3 * bodyIdx + 1] - snap.pos[3 * sunIdx + 1];
+        const double rz = snap.pos[3 * bodyIdx + 2] - snap.pos[3 * sunIdx + 2];
+        const double vx = snap.vel[3 * bodyIdx + 0] - snap.vel[3 * sunIdx + 0];
+        const double vy = snap.vel[3 * bodyIdx + 1] - snap.vel[3 * sunIdx + 1];
+        const double vz = snap.vel[3 * bodyIdx + 2] - snap.vel[3 * sunIdx + 2];
+        const double r = std::max(std::sqrt(rx * rx + ry * ry + rz * rz), 1.0);
+        const double v2 = vx * vx + vy * vy + vz * vz;
+        const double eps = 0.5 * v2 - muSun / r;
+        const double hx = ry * vz - rz * vy;
+        const double hy = rz * vx - rx * vz;
+        const double hz = rx * vy - ry * vx;
+        const double h2 = hx * hx + hy * hy + hz * hz;
+        const double h  = std::sqrt(h2);
+        if (h < 1e-12 || std::abs(eps) < 1e-18) return 0.0;
+        const double aAU = (-muSun / (2.0 * eps)) / AU;
+        const double pAU = (h2 / muSun) / AU;
+        const double cosInc = std::clamp(hz / h, -1.0, 1.0);
+        return (aJupAU / aAU) + 2.0 * std::sqrt(std::max(pAU / aJupAU, 0.0)) * cosInc;
+    };
+
+    auto pushEvent = [&](const AstroEvent& ev) {
+        if (events.size() >= MAX_EVENTS) {
+            events.erase(events.begin());
+        }
+        events.push_back(ev);
+    };
+
+    auto isDistanceMinimum = [&](double prevVal, double curVal) -> bool {
+        return forward ? (prevVal < 0.0 && curVal >= 0.0) : (prevVal > 0.0 && curVal <= 0.0);
+    };
+
+    // 1. Periapsis detection against each body's parent
+    for (int i = 0; i < M; ++i) {
+        const int p = parentIdx[i];
+        if (p < 0 || p >= M) continue;
+        const double rx = snap.pos[3 * i + 0] - snap.pos[3 * p + 0];
+        const double ry = snap.pos[3 * i + 1] - snap.pos[3 * p + 1];
+        const double rz = snap.pos[3 * i + 2] - snap.pos[3 * p + 2];
+        const double vx = snap.vel[3 * i + 0] - snap.vel[3 * p + 0];
+        const double vy = snap.vel[3 * i + 1] - snap.vel[3 * p + 1];
+        const double vz = snap.vel[3 * i + 2] - snap.vel[3 * p + 2];
+        const double rv = rx * vx + ry * vy + rz * vz;
+
+        if (initialized && isDistanceMinimum(prevRv[i], rv)) {
+            bool logThis = true;
+            if (!includeFastMoons && descs[i].category == BodyCategory::Moon) {
+                const auto kep = computeKeplerElements(i, p, snap, engine);
+                if (kep.bound && kep.period_days > 0.0 && kep.period_days < 5.0) {
+                    logThis = false;
+                }
+            }
+            if (logThis) {
+                const double distM = std::sqrt(rx * rx + ry * ry + rz * rz);
+                const double speedMs = std::sqrt(vx * vx + vy * vy + vz * vz);
+                AstroEvent ev{};
+                ev.simTimeYears = simYears;
+                ev.type = AstroEventType::Periapsis;
+                ev.bodyIdx = i;
+                ev.refIdx = p;
+                ev.bodyName = descs[i].name;
+                ev.refName = descs[p].name;
+                ev.minDistKm = distM / 1000.0;
+                ev.minDistAU = distM / AU;
+                ev.relSpeedKms = speedMs / 1000.0;
+                ev.tisserandTJ = (p == sunIdx) ? computeTisserandTJ(i) : 0.0;
+                pushEvent(ev);
+            }
+        }
+        prevRv[i] = rv;
+    }
+
+    // 2. Planetary close-encounter detection: DwarfPlanet (NEAs, Centaurs, Comets, ISO, Trojans) vs. Planet
+    for (int s = 0; s < M; ++s) {
+        if (descs[s].category != BodyCategory::DwarfPlanet) continue;
+        for (int p = 0; p < M; ++p) {
+            if (descs[p].category != BodyCategory::Planet) continue;
+            const double rx = snap.pos[3 * s + 0] - snap.pos[3 * p + 0];
+            const double ry = snap.pos[3 * s + 1] - snap.pos[3 * p + 1];
+            const double rz = snap.pos[3 * s + 2] - snap.pos[3 * p + 2];
+            const double vx = snap.vel[3 * s + 0] - snap.vel[3 * p + 0];
+            const double vy = snap.vel[3 * s + 1] - snap.vel[3 * p + 1];
+            const double vz = snap.vel[3 * s + 2] - snap.vel[3 * p + 2];
+            const double pairRv = rx * vx + ry * vy + rz * vz;
+            const size_t pairIdx = static_cast<size_t>(s) * static_cast<size_t>(M) + static_cast<size_t>(p);
+
+            if (initialized && isDistanceMinimum(prevPairRv[pairIdx], pairRv)) {
+                const double distM = std::sqrt(rx * rx + ry * ry + rz * rz);
+                // Approximate Hill sphere of planet p at its live heliocentric distance
+                const double pxS = snap.pos[3 * p + 0] - snap.pos[3 * sunIdx + 0];
+                const double pyS = snap.pos[3 * p + 1] - snap.pos[3 * sunIdx + 1];
+                const double pzS = snap.pos[3 * p + 2] - snap.pos[3 * sunIdx + 2];
+                const double rPSun = std::sqrt(pxS * pxS + pyS * pyS + pzS * pzS);
+                const double rHill = (mSun > 0.0 && engine.mass()[p] > 0.0)
+                    ? (rPSun * std::cbrt(engine.mass()[p] / (3.0 * mSun)))
+                    : 0.0;
+                const double rThresh = std::max(5.0 * rHill, 0.25 * AU);
+
+                if (distM < rThresh) {
+                    const double speedMs = std::sqrt(vx * vx + vy * vy + vz * vz);
+                    AstroEvent ev{};
+                    ev.simTimeYears = simYears;
+                    ev.type = AstroEventType::CloseEncounter;
+                    ev.bodyIdx = s;
+                    ev.refIdx = p;
+                    ev.bodyName = descs[s].name;
+                    ev.refName = descs[p].name;
+                    ev.minDistKm = distM / 1000.0;
+                    ev.minDistAU = distM / AU;
+                    ev.relSpeedKms = speedMs / 1000.0;
+                    ev.tisserandTJ = computeTisserandTJ(s);
+                    pushEvent(ev);
+                }
+            }
+            prevPairRv[pairIdx] = pairRv;
+        }
+    }
+
+    prevSimTime = snap.simTimeSeconds;
+    initialized = true;
 }
 
 } // namespace substrate

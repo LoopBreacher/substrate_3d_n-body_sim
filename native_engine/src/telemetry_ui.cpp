@@ -119,9 +119,14 @@ void drawSmartViewportHUD(ImDrawList* bgDraw,
                         IM_COL32(0, 190, 255, 135), 5.0f);
         bgDraw->AddText(ImVec2(26.0f, 24.0f), IM_COL32(0, 225, 255, 255),
                         "PIPELINE: NATIVE C++20 / CUDA -> GL 4.6 VBO");
-        char line2[128];
-        std::snprintf(line2, sizeof(line2), "PAYLOAD: %zu PARTICLES + %d HEAVY BODIES",
-                      engine.numParticles(), engine.numHeavy());
+        char line2[160];
+        if (engine.numRingParticles() > 0) {
+            std::snprintf(line2, sizeof(line2), "PAYLOAD: %zu BELT + %zu RINGS + %d HEAVY",
+                          engine.numParticles(), engine.numRingParticles(), engine.numHeavy());
+        } else {
+            std::snprintf(line2, sizeof(line2), "PAYLOAD: %zu PARTICLES + %d HEAVY BODIES",
+                          engine.numParticles(), engine.numHeavy());
+        }
         bgDraw->AddText(ImVec2(26.0f, 44.0f), IM_COL32(190, 210, 230, 255), line2);
         char line3[128];
         if (camDistanceAU < 0.01f) {
@@ -620,9 +625,14 @@ void drawTelemetryWindow(TelemetryUIState& ui,
             const char* spinModeTag = (audit.tidalLockMode == 1)
                 ? "[1:1 Tidal Lock — Emergent]"
                 : ((audit.tidalLockMode == 2) ? "[3:2 Spin-Orbit Resonance — Emergent]" : "[Free Rotator]");
-            ImGui::Text("Sidereal Spin Period / Tilt   : %.3f h (%.3f d) | Obliq: %.2f deg %s",
+            ImGui::Text("Sidereal Spin Period / Tilt   : %.3f h (%.3f d) | Live Obliq: %.4f deg %s",
                         audit.spinPeriodHours, audit.spinPeriodHours / 24.0,
-                        audit.obliquity_deg, spinModeTag);
+                        audit.liveObliquityDeg, spinModeTag);
+            if (audit.tidalLockMode == 0 && std::abs(audit.spinPrecessionArcsecYr) > 1e-6) {
+                ImGui::TextColored(ImVec4(0.95f, 0.86f, 0.40f, 1.0f),
+                                   "Live Gyro Spin Precession     : %+.2f arcsec/yr (Sun + Moons J2 torque)",
+                                   audit.spinPrecessionArcsecYr);
+            }
             ImGui::Text("Equatorial Speed & River q_rot: v_eq = %.2f m/s | q_rot = 2(v_eq/v_in)^2 = %.5e",
                         audit.vEquatorial_ms, audit.riverCentrifugalQ);
             const double invFlat = (audit.polarFlatteningF > 1e-12) ? (1.0 / audit.polarFlatteningF) : 0.0;
@@ -844,10 +854,12 @@ void drawTelemetryWindow(TelemetryUIState& ui,
             ImGui::Spacing();
             ImGui::Separator();
             ImGui::TextColored(ImVec4(0.0f, 0.88f, 1.0f, 1.0f),
-                               "Symplectic 4th-Order PEFRL + Kahan Conservation Audit");
+                               stepParams.relativistic
+                                   ? "Symplectic 4th-Order PEFRL + Kahan + Full EIH 1PN Conservation"
+                                   : "Symplectic 4th-Order PEFRL + Kahan Conservation Audit");
             const double curE = engine.newtonianEnergy(snap, stepParams.relativistic);
-            const double curL = engine.angularMomentumMag(snap);
-            const double vBary = engine.barycenterDriftSpeed(snap);
+            const double curL = engine.angularMomentumMag(snap, stepParams.relativistic);
+            const double vBary = engine.barycenterDriftSpeed(snap, stepParams.relativistic);
             const float latestE = ui.conservation.relEnergyDrift.empty()
                                       ? 0.0f
                                       : ui.conservation.relEnergyDrift.back();
@@ -872,15 +884,107 @@ void drawTelemetryWindow(TelemetryUIState& ui,
             }
             if (ImGui::SmallButton("Re-Zero Conservation Baseline")) {
                 ui.conservation.reset(curE, curL);
+                engine.canonicalMomentum(snap, stepParams.relativistic, ui.baseMomX, ui.baseMomY, ui.baseMomZ);
+                ui.conservationLog.clear();
+            }
+            ImGui::SameLine();
+            if (ImGui::SmallButton("Export Live Telemetry & Histograms to CSV")) {
+                if (engine.numRingParticles() > 0 &&
+                    ui.ringStats.boundCount == 0 && ui.ringStats.escapedCount == 0) {
+                    engine.computeRingStats(ui.ringStats);
+                }
+                const auto exp = exportTelemetryCSV(
+                    "./substrate_exports", ui.conservationLog, ui.ringStats, ui.eventTracker.events,
+                    snap, heavyDescs, parentIdx, engine, stepParams.relativistic);
+                if (exp.ok) {
+                    char msg[256];
+                    std::snprintf(msg, sizeof(msg),
+                                  "Exported 4 CSVs to %s (%zu samples, %zu events, %zu bodies)",
+                                  exp.outDir.c_str(), exp.conservationRows, exp.eventRows, exp.bodyRows);
+                    ui.lastExportStatus = msg;
+                } else {
+                    ui.lastExportStatus = "Export failed: " + exp.errorMsg;
+                }
+            }
+            if (!ui.lastExportStatus.empty()) {
+                const bool isErr = (ui.lastExportStatus.rfind("Export failed", 0) == 0);
+                ImGui::TextColored(isErr ? ImVec4(1.0f, 0.40f, 0.30f, 1.0f) : ImVec4(0.30f, 0.96f, 0.62f, 1.0f),
+                                   "%s", ui.lastExportStatus.c_str());
+            }
+
+            ImGui::Spacing();
+            ImGui::Separator();
+            if (ImGui::CollapsingHeader("Live Close-Encounter & Perihelion Event Observatory",
+                                        ImGuiTreeNodeFlags_DefaultOpen)) {
+                ImGui::Checkbox("Include Fast Moons (T < 5 d)", &ui.eventTracker.includeFastMoons);
+                ImGui::SameLine();
+                if (ImGui::SmallButton("Clear Log")) {
+                    ui.eventTracker.events.clear();
+                }
+                ImGui::SameLine();
+                ImGui::TextDisabled("(%zu logged, click row to inspect)", ui.eventTracker.events.size());
+
+                const ImGuiTableFlags evFlags = ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
+                                                ImGuiTableFlags_ScrollY | ImGuiTableFlags_Resizable;
+                if (ImGui::BeginTable("EventObsTable", 7, evFlags, ImVec2(-1.0f, 185.0f))) {
+                    ImGui::TableSetupScrollFreeze(0, 1);
+                    ImGui::TableSetupColumn("Year", ImGuiTableColumnFlags_WidthFixed, 52.0f);
+                    ImGui::TableSetupColumn("Type", ImGuiTableColumnFlags_WidthFixed, 64.0f);
+                    ImGui::TableSetupColumn("Body", ImGuiTableColumnFlags_WidthStretch, 1.15f);
+                    ImGui::TableSetupColumn("Ref", ImGuiTableColumnFlags_WidthFixed, 58.0f);
+                    ImGui::TableSetupColumn("Min Dist", ImGuiTableColumnFlags_WidthFixed, 76.0f);
+                    ImGui::TableSetupColumn("Speed", ImGuiTableColumnFlags_WidthFixed, 68.0f);
+                    ImGui::TableSetupColumn("T_J", ImGuiTableColumnFlags_WidthFixed, 44.0f);
+                    ImGui::TableHeadersRow();
+
+                    const auto& evs = ui.eventTracker.events;
+                    for (int k = static_cast<int>(evs.size()) - 1; k >= 0; --k) {
+                        const auto& ev = evs[static_cast<size_t>(k)];
+                        const bool isFlyby = (ev.type == AstroEventType::CloseEncounter);
+                        ImGui::TableNextRow();
+                        ImGui::TableSetColumnIndex(0);
+                        char rowId[32];
+                        std::snprintf(rowId, sizeof(rowId), "%.3f##ev%d", ev.simTimeYears, k);
+                        if (ImGui::Selectable(rowId, ev.bodyIdx == targetIdx, ImGuiSelectableFlags_SpanAllColumns)) {
+                            if (ev.bodyIdx >= 0 && ev.bodyIdx < numHeavy) {
+                                targetIdx = ev.bodyIdx;
+                                if (lockTarget) panOffsetAU = glm::vec3(0.0f);
+                            }
+                        }
+                        ImGui::TableSetColumnIndex(1);
+                        ImGui::TextColored(isFlyby ? ImVec4(1.0f, 0.58f, 0.25f, 1.0f)
+                                                   : ImVec4(0.35f, 0.90f, 1.0f, 1.0f),
+                                           "%s", isFlyby ? "Flyby" : "Peri");
+                        ImGui::TableSetColumnIndex(2);
+                        ImGui::TextUnformatted(ev.bodyName.c_str());
+                        ImGui::TableSetColumnIndex(3);
+                        ImGui::TextUnformatted(ev.refName.c_str());
+                        ImGui::TableSetColumnIndex(4);
+                        if (ev.minDistAU < 0.02) {
+                            ImGui::Text("%.0f km", ev.minDistKm);
+                        } else {
+                            ImGui::Text("%.4f AU", ev.minDistAU);
+                        }
+                        ImGui::TableSetColumnIndex(5);
+                        ImGui::Text("%.2f km/s", ev.relSpeedKms);
+                        ImGui::TableSetColumnIndex(6);
+                        if (std::abs(ev.tisserandTJ) > 1e-4) {
+                            ImGui::Text("%.2f", ev.tisserandTJ);
+                        } else {
+                            ImGui::TextDisabled("-");
+                        }
+                    }
+                    ImGui::EndTable();
+                }
             }
 
             ImGui::EndTabItem();
         }
 
         // ===================================================================
-        // TAB 3: BELT STATISTICAL MECHANICS & RESONANCES (Zero-Readback GPU)
+        // TAB 3: BELT & SATURN RING STATISTICAL MECHANICS (Zero-Readback GPU)
         // ===================================================================
-        if (ImGui::BeginTabItem("3. Belt Resonances (GPU)")) {
+        if (ImGui::BeginTabItem("3. Belt & Ring Resonances (GPU)")) {
             // Compute live semi-major axes of Jupiter & Neptune dynamically by name for resonance markers
             const int sunIdx = std::max(0, findBodyIndex(heavyDescs, "Sun"));
             const int jupIdx = findBodyIndex(heavyDescs, "Jupiter");
@@ -962,6 +1066,44 @@ void drawTelemetryWindow(TelemetryUIState& ui,
             ImGui::Text("Ensemble Mean Eccentricity <e>     : %.4f   |  Mean Inclination <i>: %.2f deg",
                         bs.meanEcc, bs.meanIncDeg);
 
+            // Passive Saturnian Ring Radial Density Profile (async non-blocking GPU histogram)
+            if (engine.numRingParticles() > 0) {
+                engine.pollRingStats(ui.ringStats);
+                if (!engine.ringStatsPending() && (ui.ringStatsFrameCounter++ % 15 == 0)) {
+                    engine.requestRingStats();
+                }
+
+                const RingStats& rs = ui.ringStats;
+                const SaturnRingMarkers rm = computeSaturnRingMarkers(snap, heavyDescs, engine);
+
+                ImGui::Spacing();
+                ImGui::Separator();
+                ImGui::TextColored(ImVec4(0.95f, 0.85f, 0.45f, 1.0f),
+                                   "Passive Saturnian Ring Radial Profile (70,000 - 145,000 km) & Mimas Resonances");
+                ImGui::PlotHistogram("##SaturnRingHist", rs.radialHist, RingStats::RING_BINS,
+                                     0, nullptr, 0.0f, FLT_MAX, ImVec2(-1.0f, 115.0f));
+                {
+                    const ImVec2 pMin = ImGui::GetItemRectMin();
+                    const ImVec2 pMax = ImGui::GetItemRectMax();
+                    const float rMin = static_cast<float>(RingStats::RING_MIN_KM);
+                    const float rMax = static_cast<float>(RingStats::RING_MAX_KM);
+                    if (rm.valid) {
+                        drawVerticalResonanceMarker(pMin, pMax, static_cast<float>(rm.mimas3to1_km),
+                                                    rMin, rMax, "Mimas 3:1", IM_COL32(100, 210, 255, 225), 3.0f);
+                        drawVerticalResonanceMarker(pMin, pMax, static_cast<float>(rm.mimas2to1_km),
+                                                    rMin, rMax, "Mimas 2:1 Cassini", IM_COL32(255, 210, 60, 240), 3.0f);
+                    }
+                    if (rm.iceRoche_km > 0.0) {
+                        drawVerticalResonanceMarker(pMin, pMax, static_cast<float>(rm.iceRoche_km),
+                                                    rMin, rMax, "Ice Roche", IM_COL32(255, 80, 90, 235), 18.0f);
+                    }
+                    drawVerticalResonanceMarker(pMin, pMax, static_cast<float>(rm.enckeGap_km),
+                                                rMin, rMax, "Encke", IM_COL32(90, 235, 220, 220), 3.0f);
+                }
+                ImGui::Text("Bound: %u  |  Escaped: %u  |  <r>: %.0f km  |  <e>: %.4f",
+                            rs.boundCount, rs.escapedCount, rs.meanRadiusKm, rs.meanEcc);
+            }
+
             ImGui::EndTabItem();
         }
 
@@ -994,13 +1136,15 @@ void drawTelemetryWindow(TelemetryUIState& ui,
             if (ImGui::Checkbox("Enable Live Node-Density Override on Target", &overridden)) {
                 const double rho = std::pow(10.0, static_cast<double>(ui.sandboxLog10Rho));
                 engine.setDensityOverride(targetIdx, overridden, rho, stepParams.relativistic);
-                ui.conservation.reset(engine.newtonianEnergy(snap, stepParams.relativistic), engine.angularMomentumMag(snap));
+                ui.conservation.reset(engine.newtonianEnergy(snap, stepParams.relativistic),
+                                      engine.angularMomentumMag(snap, stepParams.relativistic));
             }
 
             if (ImGui::SliderFloat("log10(rho_N) [nodes/m^3]", &ui.sandboxLog10Rho, -2.0f, 32.0f, "%.2f")) {
                 const double rho = std::pow(10.0, static_cast<double>(ui.sandboxLog10Rho));
                 engine.setDensityOverride(targetIdx, true, rho, stepParams.relativistic);
-                ui.conservation.reset(engine.newtonianEnergy(snap, stepParams.relativistic), engine.angularMomentumMag(snap));
+                ui.conservation.reset(engine.newtonianEnergy(snap, stepParams.relativistic),
+                                      engine.angularMomentumMag(snap, stepParams.relativistic));
             }
 
             // Visual threshold gauge
@@ -1028,25 +1172,29 @@ void drawTelemetryWindow(TelemetryUIState& ui,
             if (ImGui::Button("Decompile -> I-Phase (1.2 nodes/m^3, Theta = 0)")) {
                 ui.sandboxLog10Rho = std::log10(1.2f);
                 engine.setDensityOverride(targetIdx, true, 1.2, stepParams.relativistic);
-                ui.conservation.reset(engine.newtonianEnergy(snap, stepParams.relativistic), engine.angularMomentumMag(snap));
+                ui.conservation.reset(engine.newtonianEnergy(snap, stepParams.relativistic),
+                                      engine.angularMomentumMag(snap, stepParams.relativistic));
             }
             ImGui::SameLine();
             if (ImGui::Button("Compile Edge (4.5 nodes/m^3, Theta = 1)")) {
                 ui.sandboxLog10Rho = std::log10(4.5f);
                 engine.setDensityOverride(targetIdx, true, 4.5, stepParams.relativistic);
-                ui.conservation.reset(engine.newtonianEnergy(snap, stepParams.relativistic), engine.angularMomentumMag(snap));
+                ui.conservation.reset(engine.newtonianEnergy(snap, stepParams.relativistic),
+                                      engine.angularMomentumMag(snap, stepParams.relativistic));
             }
 
             if (ImGui::Button("Restore Physical Gamma-Knot Density")) {
                 engine.setDensityOverride(targetIdx, false, engine.baseDensity(targetIdx), stepParams.relativistic);
                 ui.sandboxLog10Rho = static_cast<float>(std::log10(engine.baseDensity(targetIdx)));
-                ui.conservation.reset(engine.newtonianEnergy(snap, stepParams.relativistic), engine.angularMomentumMag(snap));
+                ui.conservation.reset(engine.newtonianEnergy(snap, stepParams.relativistic),
+                                      engine.angularMomentumMag(snap, stepParams.relativistic));
             }
             ImGui::SameLine();
             if (ImGui::Button("Reset All Overrides")) {
                 engine.resetDensityOverrides(stepParams.relativistic);
                 ui.sandboxLog10Rho = static_cast<float>(std::log10(engine.baseDensity(targetIdx)));
-                ui.conservation.reset(engine.newtonianEnergy(snap, stepParams.relativistic), engine.angularMomentumMag(snap));
+                ui.conservation.reset(engine.newtonianEnergy(snap, stepParams.relativistic),
+                                      engine.angularMomentumMag(snap, stepParams.relativistic));
             }
 
             ImGui::Spacing();

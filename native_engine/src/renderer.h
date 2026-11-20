@@ -51,6 +51,7 @@ struct RenderSettings {
     bool showVectorChannels = true;         // 1R / 3R / 4R / 6.784R magnetospheric shells
     bool showHillAndRoche = true;           // Hill sphere & fluid Roche limit overlays
     bool showLagrangePoints = true;         // Live emergent 3D Lagrange points (L1-L5) for active target
+    bool showSaturnRings = true;            // Dedicated passive 40k GPU Saturnian ring system
     bool logScale = false;
     bool additiveParticles = true;
     float particleSizeScale = 1.0f;
@@ -76,11 +77,12 @@ public:
     void init();
     void shutdown();
 
-    void setPayload(const std::vector<HeavyBodyDesc>& heavy, const ParticleSet& particles);
+    void setPayload(const std::vector<HeavyBodyDesc>& heavy, const ParticleSet& particles,
+                    const ParticleSet* saturnRings = nullptr);
     void updateTrailVertices(const std::vector<TrailVertex>& lineVerts);
 
-    // Maps both interop VBOs into CUDA's address space for the current frame.
-    void mapForCuda(cudaStream_t stream, float4** heavyOut, float4** particleOut);
+    // Maps active interop VBOs into CUDA's address space for the current frame.
+    void mapForCuda(cudaStream_t stream, float4** heavyOut, float4** particleOut, float4** ringOut = nullptr);
     void unmapFromCuda(cudaStream_t stream);
 
     void draw(const DrawContext& ctx, const RenderSettings& s);
@@ -89,11 +91,12 @@ private:
     void destroyPayload();
 
     GLuint m_spriteProg = 0, m_lineProg = 0, m_trailProg = 0;
-    GLuint m_heavyVao = 0, m_particleVao = 0;
-    GLuint m_heavyAttr = 0, m_particleAttr = 0;
-    InteropBuffer m_heavyPos, m_particlePos;
+    GLuint m_heavyVao = 0, m_particleVao = 0, m_satRingVao = 0;
+    GLuint m_heavyAttr = 0, m_particleAttr = 0, m_satRingAttr = 0;
+    InteropBuffer m_heavyPos, m_particlePos, m_ringPos;
     int m_numHeavy = 0;
     size_t m_numParticles = 0;
+    size_t m_numRings = 0;
     bool m_mapped = false;
 
     GLuint m_gridVao = 0, m_gridVbo = 0;

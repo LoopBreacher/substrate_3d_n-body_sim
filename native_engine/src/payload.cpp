@@ -2,8 +2,11 @@
 #include "substrate_constants.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
+#include <fstream>
 #include <random>
+#include <sstream>
 
 namespace substrate {
 
@@ -484,7 +487,94 @@ std::vector<HeavyBodyDesc> buildHeavyBodies() {
     return h;
 }
 
-ParticleSet buildParticles(size_t numAsteroids, size_t numKBOs, uint64_t seed) {
+int applyHorizonsEpochCSV(std::vector<HeavyBodyDesc>& heavy, const std::string& csvPath) {
+    std::ifstream in(csvPath);
+    if (!in) return -1;
+
+    constexpr double AU_PER_DAY_TO_MS = AU / 86400.0;
+    const size_t M = heavy.size();
+    std::vector<bool> overridden(M, false);
+    std::vector<double> origPos(3 * M, 0.0);
+    std::vector<double> origVel(3 * M, 0.0);
+    for (size_t i = 0; i < M; ++i) {
+        for (int k = 0; k < 3; ++k) {
+            origPos[3 * i + k] = heavy[i].pos[k];
+            origVel[3 * i + k] = heavy[i].vel[k];
+        }
+    }
+
+    auto trim = [](std::string s) -> std::string {
+        size_t a = 0;
+        while (a < s.size() && std::isspace(static_cast<unsigned char>(s[a]))) ++a;
+        size_t b = s.size();
+        while (b > a && std::isspace(static_cast<unsigned char>(s[b - 1]))) --b;
+        s = s.substr(a, b - a);
+        if (s.size() >= 2 && s.front() == '"' && s.back() == '"') {
+            s = s.substr(1, s.size() - 2);
+        }
+        return s;
+    };
+
+    int updated = 0;
+    std::string line;
+    while (std::getline(in, line)) {
+        std::string trimmed = trim(line);
+        if (trimmed.empty() || trimmed[0] == '#') continue;
+
+        std::vector<std::string> cols;
+        std::stringstream ss(trimmed);
+        std::string cell;
+        while (std::getline(ss, cell, ',')) {
+            cols.push_back(trim(cell));
+        }
+        if (cols.size() < 7) continue;
+
+        // Skip header row
+        std::string lower0 = cols[0];
+        std::transform(lower0.begin(), lower0.end(), lower0.begin(),
+                       [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        if (lower0 == "name") continue;
+
+        const int idx = findBodyIndex(heavy, cols[0].c_str());
+        if (idx < 0) continue;
+
+        try {
+            const double xAU  = std::stod(cols[1]);
+            const double yAU  = std::stod(cols[2]);
+            const double zAU  = std::stod(cols[3]);
+            const double vxAD = std::stod(cols[4]);
+            const double vyAD = std::stod(cols[5]);
+            const double vzAD = std::stod(cols[6]);
+            heavy[idx].pos[0] = xAU * AU;
+            heavy[idx].pos[1] = yAU * AU;
+            heavy[idx].pos[2] = zAU * AU;
+            heavy[idx].vel[0] = vxAD * AU_PER_DAY_TO_MS;
+            heavy[idx].vel[1] = vyAD * AU_PER_DAY_TO_MS;
+            heavy[idx].vel[2] = vzAD * AU_PER_DAY_TO_MS;
+            overridden[idx] = true;
+            ++updated;
+        } catch (...) {
+            continue;
+        }
+    }
+
+    // Translate any non-overridden child satellites along with their overridden parent planet's shift
+    for (size_t m = 0; m < M; ++m) {
+        if (overridden[m]) continue;
+        const int p = findBodyIndex(heavy, heavy[m].parent.c_str());
+        if (p >= 0 && overridden[p]) {
+            for (int k = 0; k < 3; ++k) {
+                heavy[m].pos[k] += (heavy[p].pos[k] - origPos[3 * p + k]);
+                heavy[m].vel[k] += (heavy[p].vel[k] - origVel[3 * p + k]);
+            }
+        }
+    }
+
+    return updated;
+}
+
+ParticleSet buildParticles(size_t numAsteroids, size_t numKBOs, uint64_t seed,
+                           const std::vector<HeavyBodyDesc>* heavy) {
     ParticleSet ps;
     ps.reserve(numAsteroids + numKBOs);
 
@@ -495,24 +585,100 @@ ParticleSet buildParticles(size_t numAsteroids, size_t numKBOs, uint64_t seed) {
     const double muSun = nSun * K_OMEGA;
     const double muSunJup = ((M_SUN + 1.8982e27) / M_P) * K_OMEGA;
 
+    // Extract live Sun offset & Jupiter orbital elements when an epoch heavy payload is supplied
+    V3 sunPos{0.0, 0.0, 0.0};
+    V3 sunVel{0.0, 0.0, 0.0};
+    double aJupAU = 5.202887;
+    double incJupDeg = 1.3044;
+    double raanJupDeg = 100.4739;
+    double argPJupDeg = 274.2546;
+    double nuJupDeg = 21.6461;
+    double lambdaJupDeg = 34.39644;
+
+    if (heavy != nullptr) {
+        const int idxSun = findBodyIndex(*heavy, "Sun");
+        const int idxJup = findBodyIndex(*heavy, "Jupiter");
+        if (idxSun >= 0) {
+            sunPos = {(*heavy)[idxSun].pos[0], (*heavy)[idxSun].pos[1], (*heavy)[idxSun].pos[2]};
+            sunVel = {(*heavy)[idxSun].vel[0], (*heavy)[idxSun].vel[1], (*heavy)[idxSun].vel[2]};
+        }
+        if (idxSun >= 0 && idxJup >= 0) {
+            const double rx = (*heavy)[idxJup].pos[0] - sunPos.x;
+            const double ry = (*heavy)[idxJup].pos[1] - sunPos.y;
+            const double rz = (*heavy)[idxJup].pos[2] - sunPos.z;
+            const double vx = (*heavy)[idxJup].vel[0] - sunVel.x;
+            const double vy = (*heavy)[idxJup].vel[1] - sunVel.y;
+            const double vz = (*heavy)[idxJup].vel[2] - sunVel.z;
+            const double r = std::sqrt(rx * rx + ry * ry + rz * rz);
+            const double v2 = vx * vx + vy * vy + vz * vz;
+            const double muSJ = (((*heavy)[idxSun].mass + (*heavy)[idxJup].mass) / M_P) * K_OMEGA;
+            const double eps = 0.5 * v2 - muSJ / std::max(r, 1.0);
+            if (eps < -1e-12 && r > 1.0) {
+                const double aCand = (-muSJ / (2.0 * eps)) / AU;
+                const double hx = ry * vz - rz * vy;
+                const double hy = rz * vx - rx * vz;
+                const double hz = rx * vy - ry * vx;
+                const double h = std::sqrt(hx * hx + hy * hy + hz * hz);
+                if (aCand > 1.0 && aCand < 20.0 && h > 1e-12) {
+                    const double ex = (vy * hz - vz * hy) / muSJ - rx / r;
+                    const double ey = (vz * hx - vx * hz) / muSJ - ry / r;
+                    const double ez = (vx * hy - vy * hx) / muSJ - rz / r;
+                    const double e = std::sqrt(ex * ex + ey * ey + ez * ez);
+                    if (e < 0.5) {
+                        aJupAU = aCand;
+                        incJupDeg = std::acos(std::clamp(hz / h, -1.0, 1.0)) * (180.0 / PI);
+                        const double nx = -hy, ny = hx;
+                        const double nLen = std::sqrt(nx * nx + ny * ny);
+                        double raan = 0.0, argP = 0.0, nu = 0.0;
+                        if (nLen > 1e-12 * h) {
+                            raan = std::acos(std::clamp(nx / nLen, -1.0, 1.0));
+                            if (ny < 0.0) raan = TWO_PI - raan;
+                            if (e > 1e-9) {
+                                argP = std::acos(std::clamp((nx * ex + ny * ey) / (nLen * e), -1.0, 1.0));
+                                if (ez < 0.0) argP = TWO_PI - argP;
+                            }
+                        } else if (e > 1e-9) {
+                            argP = std::atan2(ey, ex);
+                            if (argP < 0.0) argP += TWO_PI;
+                        }
+                        if (e > 1e-9) {
+                            nu = std::acos(std::clamp((ex * rx + ey * ry + ez * rz) / (e * r), -1.0, 1.0));
+                            if (rx * vx + ry * vy + rz * vz < 0.0) nu = TWO_PI - nu;
+                        } else {
+                            nu = std::atan2(ry, rx);
+                            if (nu < 0.0) nu += TWO_PI;
+                        }
+                        const double E = 2.0 * std::atan2(std::sqrt(1.0 - e) * std::sin(0.5 * nu),
+                                                          std::sqrt(1.0 + e) * std::cos(0.5 * nu));
+                        double M = E - e * std::sin(E);
+                        if (M < 0.0) M += TWO_PI;
+                        raanJupDeg = raan * (180.0 / PI);
+                        argPJupDeg = argP * (180.0 / PI);
+                        nuJupDeg = nu * (180.0 / PI);
+                        lambdaJupDeg = std::fmod(raanJupDeg + argPJupDeg + M * (180.0 / PI) + 3600.0, 360.0);
+                    }
+                }
+            }
+        }
+    }
+
     auto pushParticle = [&](const State6& st, uint32_t rgba, float pxSize) {
-        ps.px.push_back(st.pos.x);
-        ps.py.push_back(st.pos.y);
-        ps.pz.push_back(st.pos.z);
-        ps.vx.push_back(st.vel.x);
-        ps.vy.push_back(st.vel.y);
-        ps.vz.push_back(st.vel.z);
+        ps.px.push_back(st.pos.x + sunPos.x);
+        ps.py.push_back(st.pos.y + sunPos.y);
+        ps.pz.push_back(st.pos.z + sunPos.z);
+        ps.vx.push_back(st.vel.x + sunVel.x);
+        ps.vy.push_back(st.vel.y + sunVel.y);
+        ps.vz.push_back(st.vel.z + sunVel.z);
         ps.rgba.push_back(rgba);
         ps.size.push_back(pxSize);
     };
 
-    // Exact J2000.0 Jupiter mean-motion Kirkwood resonance locations: a_{p:q} = a_Jup * (q/p)^(2/3)
-    constexpr double A_JUP = 5.202887;
-    const double a41 = A_JUP * std::pow(1.0 / 4.0, 2.0 / 3.0); // 2.065 AU (4:1 inner boundary)
-    const double a31 = A_JUP * std::pow(1.0 / 3.0, 2.0 / 3.0); // 2.501 AU (3:1 Alinda/Hestia gap)
-    const double a52 = A_JUP * std::pow(2.0 / 5.0, 2.0 / 3.0); // 2.824 AU (5:2 gap)
-    const double a73 = A_JUP * std::pow(3.0 / 7.0, 2.0 / 3.0); // 2.957 AU (7:3 gap)
-    const double a21 = A_JUP * std::pow(1.0 / 2.0, 2.0 / 3.0); // 3.278 AU (2:1 Hecuba gap)
+    // Jupiter mean-motion Kirkwood resonance locations: a_{p:q} = a_Jup * (q/p)^(2/3)
+    const double a41 = aJupAU * std::pow(1.0 / 4.0, 2.0 / 3.0); // 2.065 AU (4:1 inner boundary)
+    const double a31 = aJupAU * std::pow(1.0 / 3.0, 2.0 / 3.0); // 2.501 AU (3:1 Alinda/Hestia gap)
+    const double a52 = aJupAU * std::pow(2.0 / 5.0, 2.0 / 3.0); // 2.824 AU (5:2 gap)
+    const double a73 = aJupAU * std::pow(3.0 / 7.0, 2.0 / 3.0); // 2.957 AU (7:3 gap)
+    const double a21 = aJupAU * std::pow(1.0 / 2.0, 2.0 / 3.0); // 3.278 AU (2:1 Hecuba gap)
 
     // Inverted Gaussian survival probability across the 5 primary Kirkwood resonances
     auto kirkwoodSurvival = [&](double aAU) {
@@ -572,13 +738,12 @@ ParticleSet buildParticles(size_t numAsteroids, size_t numKBOs, uint64_t seed) {
     // Resonant angle 3*lambda_Jup - 2*lambda_Hilda - varpi_Hilda ~ 0 deg at aphelion forms a 3-fold triangle
     // with vertices at Jupiter's L4 (+60 deg), L5 (-60 deg), and L3 (+180 deg).
     if (nHilda > 0) {
-        const double aHildaCenter = A_JUP * std::pow(2.0 / 3.0, 2.0 / 3.0); // 3.9705 AU
+        const double aHildaCenter = aJupAU * std::pow(2.0 / 3.0, 2.0 / 3.0); // ~3.9705 AU
         std::normal_distribution<double> nAHilda(aHildaCenter, 0.035);
         std::uniform_real_distribution<double> uEHilda(0.14, 0.23);
-        std::normal_distribution<double> nIncHilda(1.3044, 4.2);
+        std::normal_distribution<double> nIncHilda(incJupDeg, 4.2);
         std::uniform_real_distribution<double> uMHilda(0.0, 360.0);
         std::normal_distribution<double> nLibPhi(0.0, 18.0);
-        constexpr double LAMBDA_JUP_DEG = 34.39644; // Jupiter's exact J2000.0 mean longitude
         const uint32_t hildaRGBA = packRGBA(0.92f, 0.66f, 0.34f, 0.58f);
 
         for (size_t i = 0; i < nHilda; ++i) {
@@ -587,7 +752,7 @@ ParticleSet buildParticles(size_t numAsteroids, size_t numKBOs, uint64_t seed) {
             const double inc = std::abs(nIncHilda(rng));
             const double Mdeg = uMHilda(rng);
             const double dPhi = nLibPhi(rng);
-            const double varpi = 3.0 * LAMBDA_JUP_DEG - 3.0 * Mdeg + dPhi;
+            const double varpi = 3.0 * lambdaJupDeg - 3.0 * Mdeg + dPhi;
             const double raan  = uAngle(rng);
             const double argP  = std::fmod(varpi - raan + 3600.0, 360.0);
             const double Mrad  = Mdeg * DEG2RAD;
@@ -596,24 +761,24 @@ ParticleSet buildParticles(size_t numAsteroids, size_t numKBOs, uint64_t seed) {
         }
     }
 
-    // 3. Jupiter L4 (+60 deg Greek Camp) & L5 (-60 deg Trojan Camp) Swarms (a ~ 5.2029 AU, 12% of numAsteroids)
+    // 3. Jupiter L4 (+60 deg Greek Camp) & L5 (-60 deg Trojan Camp) Swarms (a ~ aJupAU, 12% of numAsteroids)
     if (nTrojan > 0) {
-        std::normal_distribution<double> nATrojan(A_JUP, 0.032);
+        std::normal_distribution<double> nATrojan(aJupAU, 0.032);
         std::uniform_real_distribution<double> uETrojan(0.02, 0.09);
-        std::normal_distribution<double> nIncTrojan(1.3044, 6.5);
-        std::normal_distribution<double> nRaanTrojan(100.4739, 4.0);
-        std::normal_distribution<double> nArgPTrojan(274.2546, 6.0);
+        std::normal_distribution<double> nIncTrojan(incJupDeg, 6.5);
+        std::normal_distribution<double> nRaanTrojan(raanJupDeg, 4.0);
+        std::normal_distribution<double> nArgPTrojan(argPJupDeg, 6.0);
         std::normal_distribution<double> nNuLibration(0.0, 10.5);
         const uint32_t trojanRGBA = packRGBA(0.28f, 0.88f, 0.62f, 0.60f);
 
         for (size_t i = 0; i < nTrojan; ++i) {
             const double campSign = (i % 2 == 0) ? +60.0 : -60.0;
-            const double aAU  = std::clamp(nATrojan(rng), 5.08, 5.33);
+            const double aAU  = std::clamp(nATrojan(rng), aJupAU - 0.12, aJupAU + 0.13);
             const double e    = uETrojan(rng);
             const double inc  = std::abs(nIncTrojan(rng));
             const double raan = nRaanTrojan(rng);
             const double argP = nArgPTrojan(rng);
-            const double nu   = 21.6461 + campSign + nNuLibration(rng);
+            const double nu   = nuJupDeg + campSign + nNuLibration(rng);
             pushParticle(keplerState(muSunJup, aAU * AU, e, inc, raan, argP, nu), trojanRGBA, 2.1f);
         }
     }
@@ -708,9 +873,81 @@ ParticleSet buildParticles(size_t numAsteroids, size_t numKBOs, uint64_t seed) {
     return ps;
 }
 
-ParticleSet buildParticles(size_t total, uint64_t seed) {
+ParticleSet buildParticles(size_t total, uint64_t seed, const std::vector<HeavyBodyDesc>* heavy) {
     const size_t nAst = total / 3;
-    return buildParticles(nAst, total - nAst, seed);
+    return buildParticles(nAst, total - nAst, seed, heavy);
+}
+
+ParticleSet buildSaturnRings(size_t numRingParticles, const std::vector<HeavyBodyDesc>& heavy, uint64_t seed) {
+    ParticleSet ps;
+    const int satIdx = findBodyIndex(heavy, "Saturn");
+    if (satIdx < 0 || numRingParticles == 0) return ps;
+
+    ps.reserve(numRingParticles);
+
+    const auto& sat = heavy[satIdx];
+    const double mSat = sat.mass;
+    const double rSat = sat.radiusM;
+    const double j2Sat = planetJ2(mSat, rSat, sat.spinPeriodHours, sat.momentOfInertiaC);
+
+    std::mt19937_64 rng(seed);
+    std::uniform_real_distribution<double> u01(0.0, 1.0);
+    std::uniform_real_distribution<double> uAngle(0.0, 360.0);
+
+    auto pushRingZone = [&](size_t count, double rMinKm, double rMaxKm,
+                            double eMin, double eMax, double incSigmaDeg,
+                            uint32_t rgba, float pxSize,
+                            double gapMinKm = 0.0, double gapMaxKm = 0.0) {
+        if (count == 0) return;
+        std::uniform_real_distribution<double> uE(eMin, eMax);
+        std::normal_distribution<double> nInc(0.0, incSigmaDeg);
+        const double rMin2 = rMinKm * rMinKm;
+        const double rMax2 = rMaxKm * rMaxKm;
+        for (size_t i = 0; i < count; ++i) {
+            double rKm = std::sqrt(rMin2 + u01(rng) * (rMax2 - rMin2));
+            if (gapMaxKm > gapMinKm) {
+                for (int attempt = 0; attempt < 16; ++attempt) {
+                    if (rKm < gapMinKm || rKm > gapMaxKm) break;
+                    rKm = std::sqrt(rMin2 + u01(rng) * (rMax2 - rMin2));
+                }
+            }
+            const double rMeters = rKm * 1000.0;
+            const double muEff = j2CorrectedMu(mSat, rSat, j2Sat, 0.0, rMeters);
+            const double e = (eMax > eMin) ? uE(rng) : eMin;
+            const double inc = std::abs(nInc(rng));
+            const State6 relEq = keplerState(muEff, rMeters, e, inc, uAngle(rng), uAngle(rng), uAngle(rng));
+            const State6 rel = rotateFromParentEquator(sat.spinAxis, relEq);
+            ps.px.push_back(rel.pos.x);
+            ps.py.push_back(rel.pos.y);
+            ps.pz.push_back(rel.pos.z);
+            ps.vx.push_back(rel.vel.x);
+            ps.vy.push_back(rel.vel.y);
+            ps.vz.push_back(rel.vel.z);
+            ps.rgba.push_back(rgba);
+            ps.size.push_back(pxSize);
+        }
+    };
+
+    // 5 physical Saturnian ring zones (strictly inside Saturn's icy Roche domain, tilted to 26.73 deg equator):
+    //   14% C Ring           (74,658 - 92,000 km)
+    //   48% B Ring           (92,000 - 117,580 km, outer edge locked at Mimas 2:1 ILR ~117,009 km)
+    //    2% Cassini Division (117,580 - 122,170 km, sparse)
+    //   33% A Ring           (122,170 - 136,775 km, with narrow Encke Gap at 133,425 - 133,755 km)
+    //    3% F Ring           (140,180 +- 250 km)
+    const size_t nC       = (numRingParticles * 14) / 100;
+    const size_t nB       = (numRingParticles * 48) / 100;
+    const size_t nCassini = (numRingParticles * 2) / 100;
+    const size_t nA       = (numRingParticles * 33) / 100;
+    const size_t nF       = numRingParticles - (nC + nB + nCassini + nA);
+
+    pushRingZone(nC,       74658.0,  92000.0, 0.0001, 0.0015, 0.04, packRGBA(0.58f, 0.62f, 0.70f, 0.36f), 1.6f);
+    pushRingZone(nB,       92000.0, 117580.0, 0.0001, 0.0012, 0.03, packRGBA(0.95f, 0.90f, 0.80f, 0.72f), 1.8f);
+    pushRingZone(nCassini,117580.0, 122170.0, 0.0010, 0.0050, 0.05, packRGBA(0.44f, 0.48f, 0.56f, 0.22f), 1.5f);
+    pushRingZone(nA,      122170.0, 136775.0, 0.0001, 0.0015, 0.04, packRGBA(0.84f, 0.82f, 0.76f, 0.56f), 1.7f,
+                 133425.0, 133755.0);
+    pushRingZone(nF,      139930.0, 140430.0, 0.0025, 0.0025, 0.06, packRGBA(0.88f, 0.91f, 0.97f, 0.54f), 1.6f);
+
+    return ps;
 }
 
 } // namespace substrate

@@ -56,10 +56,22 @@ std::vector<HeavyBodyDesc> buildHeavyBodies();
 // Finds a heavy body's index by exact name, returning -1 if not found.
 int findBodyIndex(const std::vector<HeavyBodyDesc>& descs, const char* name);
 
+// Overrides initial (pos, vel) of matching heavy bodies from a NASA/JPL Horizons Ecliptic J2000.0
+// barycentric CSV (columns: name,x_au,y_au,z_au,vx_aud,vy_aud,vz_aud).
+// Automatically translates any non-overridden child moons along with their parent planet's shift.
+// Returns the number of heavy bodies updated (or -1 if the file could not be opened).
+int applyHorizonsEpochCSV(std::vector<HeavyBodyDesc>& heavy, const std::string& csvPath);
+
 // Main asteroid belt (2.06-3.35 AU) + Classical Kuiper Belt (30.0-47.8 AU) & Scattered Disk (47.8-68.0 AU).
-ParticleSet buildParticles(size_t numAsteroids, size_t numKBOs, uint64_t seed = 42);
+// When `heavy` is supplied, locks Kirkwood gaps, 3:2 Hildas & Jupiter L4/L5 Trojans to Jupiter's live epoch state.
+ParticleSet buildParticles(size_t numAsteroids, size_t numKBOs, uint64_t seed = 42,
+                           const std::vector<HeavyBodyDesc>* heavy = nullptr);
 
 // Splits a total particle budget with the prototype's 1:2 asteroid/KBO ratio.
-ParticleSet buildParticles(size_t total, uint64_t seed = 42);
+ParticleSet buildParticles(size_t total, uint64_t seed = 42,
+                           const std::vector<HeavyBodyDesc>* heavy = nullptr);
+
+// Saturn-centric passive icy ring particles (stored in Saturn-relative coordinates, m and m/s).
+ParticleSet buildSaturnRings(size_t numRingParticles, const std::vector<HeavyBodyDesc>& heavy, uint64_t seed = 1337);
 
 } // namespace substrate
